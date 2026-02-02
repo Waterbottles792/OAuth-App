@@ -1,0 +1,173 @@
+/**
+ * Configuration Management Module
+ * 
+ * Centralized configuration with environment variable validation.
+ * Phase 0: Basic server and security configuration only.
+ * 
+ * SECURITY NOTES:
+ * - All secrets must be loaded from environment variables, never hardcoded
+ * - Configuration validation prevents server startup with invalid/missing values
+ * - Database and Redis configs are defined but not used until Phase 1
+ */
+
+import dotenv from 'dotenv';
+import path from 'path';
+
+// Load environment variables from .env file
+dotenv.config({ path: path.resolve(__dirname, '../../.env') });
+
+/**
+ * Server Configuration
+ */
+export const serverConfig = {
+    env: process.env.NODE_ENV || 'development',
+    port: parseInt(process.env.PORT || '3001', 10),
+    apiVersion: process.env.API_VERSION || 'v1',
+
+    // Security: Force HTTPS in production
+    isProduction: process.env.NODE_ENV === 'production',
+    isDevelopment: process.env.NODE_ENV === 'development',
+} as const;
+
+/**
+ * Database Configuration (PostgreSQL)
+ * 
+ * NOT USED IN PHASE 0
+ * Will be activated in Phase 1 for user accounts and sessions
+ */
+export const databaseConfig = {
+    host: process.env.DB_HOST || 'localhost',
+    port: parseInt(process.env.DB_PORT || '5432', 10),
+    database: process.env.DB_NAME || 'oauth_platform',
+    user: process.env.DB_USER || 'oauth_user',
+    password: process.env.DB_PASSWORD || '',
+    ssl: process.env.DB_SSL === 'true',
+
+    // Connection pool settings for production
+    max: 20,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 2000,
+} as const;
+
+/**
+ * Redis Configuration
+ * 
+ * NOT USED IN PHASE 0
+ * Will be activated in Phase 1 for session storage and rate limiting
+ */
+export const redisConfig = {
+    host: process.env.REDIS_HOST || 'localhost',
+    port: parseInt(process.env.REDIS_PORT || '6379', 10),
+    password: process.env.REDIS_PASSWORD || '',
+} as const;
+
+/**
+ * Security Configuration
+ */
+export const securityConfig = {
+    // CORS: Explicit origin allowlist (no wildcards allowed)
+    corsOrigins: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000'],
+
+    // Rate limiting configuration (enforced in Phase 1+)
+    rateLimit: {
+        windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS || '900000', 10), // 15 minutes
+        maxRequests: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '100', 10),
+    },
+
+    // Session configuration (used in Phase 1+)
+    session: {
+        secret: process.env.SESSION_SECRET || '',
+        cookieMaxAge: parseInt(process.env.SESSION_COOKIE_MAX_AGE || '86400000', 10), // 24 hours
+
+        // Security flags for session cookies
+        cookieOptions: {
+            httpOnly: true, // Prevent JavaScript access (XSS protection)
+            secure: process.env.NODE_ENV === 'production', // HTTPS only in production
+            sameSite: 'lax' as const, // CSRF protection
+            path: '/',
+        },
+    },
+} as const;
+
+/**
+ * Logging Configuration
+ */
+export const loggingConfig = {
+    level: process.env.LOG_LEVEL || 'info',
+} as const;
+
+/**
+ * OAuth 2.1 & OIDC Non-Negotiable Configuration
+ * 
+ * These settings are LOCKED and must never be changed.
+ * They represent security-critical decisions for the platform.
+ * 
+ * NOT IMPLEMENTED IN PHASE 0 - Documentation only
+ */
+export const oauthConfig = {
+    // Token configuration (Phase 4+)
+    tokens: {
+        format: 'JWT' as const, // LOCKED: JWT format only
+        algorithm: 'RS256' as const, // LOCKED: Asymmetric signing (RS256 or ES256)
+        accessTokenLifetime: 900, // LOCKED: 15 minutes maximum (in seconds)
+    },
+
+    // Flow configuration (Phase 3+)
+    flows: {
+        allowedGrants: ['authorization_code'] as const, // LOCKED: Only auth code flow
+        requirePkce: true, // LOCKED: PKCE required for all clients
+        allowImplicit: false, // LOCKED: Implicit flow forbidden
+        allowWildcardRedirects: false, // LOCKED: Exact redirect URI match only
+    },
+
+    // Refresh token configuration (Phase 5+)
+    refreshTokens: {
+        rotating: true, // LOCKED: Single-use rotating refresh tokens
+        reuseDetection: true, // LOCKED: Detect and revoke on reuse
+    },
+} as const;
+
+/**
+ * Configuration Validation
+ * 
+ * Validates critical configuration on server startup.
+ * Prevents running with insecure or missing configuration.
+ */
+export function validateConfig(): void {
+    const errors: string[] = [];
+
+    // Validate port
+    if (isNaN(serverConfig.port) || serverConfig.port < 1 || serverConfig.port > 65535) {
+        errors.push('Invalid PORT: must be between 1 and 65535');
+    }
+
+    // Validate CORS origins (no wildcards)
+    securityConfig.corsOrigins.forEach(origin => {
+        if (origin.includes('*')) {
+            errors.push(`Invalid CORS origin "${origin}": wildcards not allowed`);
+        }
+    });
+
+    // Production-specific validations
+    if (serverConfig.isProduction) {
+        if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) {
+            errors.push('SESSION_SECRET must be at least 32 characters in production');
+        }
+
+        if (!process.env.DB_PASSWORD) {
+            errors.push('DB_PASSWORD is required in production');
+        }
+
+        if (!process.env.REDIS_PASSWORD) {
+            errors.push('REDIS_PASSWORD is required in production');
+        }
+    }
+
+    if (errors.length > 0) {
+        console.error('❌ Configuration validation failed:');
+        errors.forEach(error => console.error(`  - ${error}`));
+        process.exit(1);
+    }
+
+    console.log('✅ Configuration validated successfully');
+}

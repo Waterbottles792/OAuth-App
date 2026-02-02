@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:14-alpine
+    container_name: oauth_postgres
+    environment:
+      POSTGRES_USER: oauth_user
+      POSTGRES_PASSWORD: oauth_dev_password_change_in_production
+      POSTGRES_DB: oauth_platform
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oauth_user -d oauth_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - oauth_network
+
+  redis:
+    image: redis:7-alpine
+    container_name: oauth_redis
+    command: redis-server --requirepass redis_dev_password_change_in_production
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - oauth_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  oauth_network:
+    driver: bridge
