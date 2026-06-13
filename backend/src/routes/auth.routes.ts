@@ -16,7 +16,7 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { securityConfig, authConfig } from '../config';
 import { validate, registerSchema, loginSchema, totpCodeSchema } from '../lib/validation';
 import { UnauthorizedError } from '../lib/errors';
-import { loginRateLimit } from '../middleware/rateLimit.middleware';
+import { loginRateLimit, registerRateLimit, mfaRateLimit } from '../middleware/rateLimit.middleware';
 import { requireAuth } from '../middleware/auth.middleware';
 import * as authService from '../services/auth.service';
 import { destroySession } from '../services/session.service';
@@ -59,10 +59,14 @@ const h =
 
 router.post(
     '/register',
+    registerRateLimit,
     h(async (req, res) => {
         const { email, password } = validate(registerSchema, req.body);
-        const { userId } = await authService.register(email, password);
-        res.status(201).json({ userId, message: 'Account created. Check your email to verify.' });
+        // Enumeration-resistant: identical response whether or not the email already exists.
+        await authService.register(email, password);
+        res.status(202).json({
+            message: 'If the email can be registered, a verification link has been sent.',
+        });
     }),
 );
 
@@ -86,6 +90,7 @@ router.post(
 
 router.post(
     '/mfa/login',
+    mfaRateLimit,
     h(async (req, res) => {
         const challengeToken = req.signedCookies?.[securityConfig.session.mfaCookieName];
         if (!challengeToken) throw new UnauthorizedError('No pending MFA challenge');

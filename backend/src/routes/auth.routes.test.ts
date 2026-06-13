@@ -21,10 +21,12 @@ function totpNow(secret: string): string {
 }
 
 describe('auth routes — registration & validation', () => {
-    it('registers a new user', async () => {
+    it('registers a new user with a uniform, non-enumerating response', async () => {
         const res = await request(app).post(`${API}/register`).send({ email: EMAIL, password: PASSWORD });
-        expect(res.status).toBe(201);
-        expect(res.body.userId).toBeTruthy();
+        expect(res.status).toBe(202);
+        expect(res.body.message).toBeTruthy();
+        // Must NOT leak whether an account was created.
+        expect(res.body.userId).toBeUndefined();
     });
 
     it('rejects a weak password', async () => {
@@ -33,10 +35,13 @@ describe('auth routes — registration & validation', () => {
         expect(res.body.error).toBe('invalid_request');
     });
 
-    it('rejects duplicate registration', async () => {
-        await request(app).post(`${API}/register`).send({ email: EMAIL, password: PASSWORD });
-        const res = await request(app).post(`${API}/register`).send({ email: EMAIL, password: PASSWORD });
-        expect(res.status).toBe(409);
+    it('returns the SAME response for a duplicate registration (no enumeration)', async () => {
+        const first = await request(app).post(`${API}/register`).send({ email: EMAIL, password: PASSWORD });
+        const second = await request(app).post(`${API}/register`).send({ email: EMAIL, password: PASSWORD });
+        // Identical status + body whether or not the email already existed.
+        expect(second.status).toBe(first.status);
+        expect(second.status).toBe(202);
+        expect(second.body).toEqual(first.body);
     });
 });
 

@@ -7,9 +7,9 @@
  * Phase 1 checklist.
  */
 
-import { query, withTransaction } from '../db/pool';
+import { query } from '../db/pool';
 import { authConfig, serverConfig } from '../config';
-import { ConflictError, UnauthorizedError } from '../lib/errors';
+import { UnauthorizedError } from '../lib/errors';
 import { randomToken } from '../lib/crypto';
 import { mailer } from '../lib/mailer';
 import { hashPassword, verifyPassword } from './password.service';
@@ -46,24 +46,39 @@ async function getUserByEmail(email: string): Promise<UserWithHash | null> {
 
 /**
  * Register a new user. Email is assumed pre-normalized (lowercased/trimmed) by validation.
- * Sends a verification link via the (dev) mailer. Does not create a session.
+ *
+ * Enumeration-resistant: the caller gets the same outcome whether or not the email was
+ * already taken (the route returns a uniform response). The password is ALWAYS hashed first,
+ * so response timing doesn't reveal account existence either. If the email already exists we
+ * notify the address owner instead of confirming existence to the requester.
  */
-export async function register(email: string, password: string): Promise<{ userId: string }> {
-    const existing = await getUserByEmail(email);
-    if (existing) {
-        // Same response shape as success would be nicer for enumeration resistance, but the
-        // unique constraint makes silent success impossible; surface a clear conflict here.
-        throw new ConflictError('An account with this email already exists');
-    }
-
+export async function register(
+    email: string,
+    password: string,
+): Promise<{ created: boolean; userId: string | null }> {
+    // Always hash, even when the email is taken, to keep timing uniform.
     const passwordHash = await hashPassword(password);
-    const userId = await withTransaction(async (client) => {
-        const { rows } = await client.query<{ id: string }>(
+
+    let userId: string;
+    try {
+        const { rows } = await query<{ id: string }>(
             'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id',
             [email, passwordHash],
         );
-        return rows[0].id;
-    });
+        userId = rows[0].id;
+    } catch (err) {
+        if ((err as { code?: string }).code === '23505') {
+            // Email already registered — do NOT reveal this. Notify the address owner.
+            await mailer.send(
+                email,
+                'Registration attempt',
+                'Someone tried to register an account with this email. If this was you, you already ' +
+                    'have an account — try signing in or resetting your password.',
+            );
+            return { created: false, userId: null };
+        }
+        throw err;
+    }
 
     // Dev email verification: log a link. (Verification enforcement is deferred — see notes.)
     const verifyToken = randomToken(32);
@@ -73,7 +88,7 @@ export async function register(email: string, password: string): Promise<{ userI
         `Confirm your account:\nhttp://localhost:${serverConfig.port}/api/v1/auth/verify-email?token=${verifyToken}`,
     );
 
-    return { userId };
+    return { created: true, userId };
 }
 
 function isLocked(user: { locked_at: Date | null }): boolean {

@@ -55,3 +55,29 @@ export const loginRateLimit = rateLimit({
         return `${req.ip}:${email}`;
     },
 });
+
+const byIp = (req: { ip?: string }) => req.ip ?? 'unknown';
+
+/** Registration limiter (per IP) — throttles account-creation spam. */
+export const registerRateLimit = rateLimit({
+    keyPrefix: 'register',
+    max: authConfig.registerRateLimit.max,
+    windowSeconds: authConfig.registerRateLimit.windowSeconds,
+    keyFn: byIp,
+});
+
+/** MFA challenge limiter (per IP) — throttles second-factor guessing. */
+export const mfaRateLimit = rateLimit({
+    keyPrefix: 'mfa',
+    max: authConfig.mfaRateLimit.max,
+    windowSeconds: authConfig.mfaRateLimit.windowSeconds,
+    keyFn: byIp,
+});
+
+/** Token endpoint limiter (per IP) — throttles code/secret guessing and DoS. */
+export const tokenRateLimit = rateLimit({
+    keyPrefix: 'token',
+    max: authConfig.tokenRateLimit.max,
+    windowSeconds: authConfig.tokenRateLimit.windowSeconds,
+    keyFn: byIp,
+});

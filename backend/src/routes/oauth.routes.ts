@@ -15,6 +15,7 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { loadUser, requireAuth } from '../middleware/auth.middleware';
+import { tokenRateLimit } from '../middleware/rateLimit.middleware';
 import { oauthFlowConfig } from '../config';
 import {
     redirectUriMatches,
@@ -257,6 +258,7 @@ function tokenError(res: Response, status: number, error: string, description: s
 
 router.post(
     '/token',
+    tokenRateLimit,
     h(async (req, res) => {
         const b = req.body as Record<string, string | undefined>;
         const grantType = b.grant_type;

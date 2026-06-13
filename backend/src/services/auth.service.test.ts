@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { query } from '../db/pool';
 import { register, login, getUserById } from './auth.service';
-import { UnauthorizedError, ConflictError } from '../lib/errors';
+import { UnauthorizedError } from '../lib/errors';
 
 const EMAIL = 'lockme@example.com';
 const PASSWORD = 'CorrectHorse123';
@@ -15,11 +15,22 @@ async function lockedAt(email: string): Promise<Date | null> {
 }
 
 describe('auth.service', () => {
-    it('registers a user and rejects duplicates', async () => {
-        const { userId } = await register(EMAIL, PASSWORD);
-        const user = await getUserById(userId);
+    it('registers a user and is enumeration-resistant on duplicates', async () => {
+        const first = await register(EMAIL, PASSWORD);
+        expect(first.created).toBe(true);
+        const user = await getUserById(first.userId!);
         expect(user?.email).toBe(EMAIL);
-        await expect(register(EMAIL, PASSWORD)).rejects.toBeInstanceOf(ConflictError);
+
+        // Re-registering the same email does NOT throw or reveal existence; no second row.
+        const dup = await register(EMAIL, PASSWORD);
+        expect(dup.created).toBe(false);
+        expect(dup.userId).toBeNull();
+
+        const { rows } = await query<{ count: string }>(
+            'SELECT COUNT(*)::text AS count FROM users WHERE email = $1',
+            [EMAIL],
+        );
+        expect(rows[0].count).toBe('1');
     });
 
     it('locks the account after 5 failed attempts and then refuses a correct password', async () => {

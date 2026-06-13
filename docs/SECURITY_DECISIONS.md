@@ -429,6 +429,24 @@ if (!isAuthorized) {
 | Date | Phase | Decision | Rationale |
 |------|-------|----------|-----------|
 | 2026-02-02 | Phase 0 | All decisions documented | Initial security architecture |
+| 2026-06-13 | 1–4 review | Security audit + hardening | See note below |
+
+### Security review (2026-06-13, after Phase 4)
+
+Audited Phases 0–4. Confirmed **no private keys or secrets are committed** (JWT private keys
+are AES-256-GCM encrypted in Postgres; `.env` is gitignored). Fixed:
+- **Dependencies:** patched transitive `qs`/`express` DoS and `minimatch` ReDoS → **0 npm audit vulnerabilities** (prod + dev).
+- **NODE_ENV footgun:** `validateConfig` now requires real `SESSION_SECRET`,
+  `JWT_KEY_ENCRYPTION_SECRET`, and DB/Redis passwords in **any** env that isn't explicitly
+  `development`/`test` (production, staging, or unset all fail loudly) — no more silent fallback to dev keys.
+- **Registration enumeration:** `/register` is now enumeration- and timing-resistant
+  (always hashes, uniform `202` response, notifies the address owner instead of returning `409`).
+- **Rate limiting:** added per-IP limiters to `/register`, `/mfa/login`, and `/token`
+  (login was already limited).
+
+Deferred (documented, not yet implemented): CSRF token on the consent `POST` (currently
+mitigated by `SameSite=Lax`) lands with the Phase 7 frontend; email-verification enforcement
+and platform-wide rate limiting are Phase 7/8.
 
 ---
 

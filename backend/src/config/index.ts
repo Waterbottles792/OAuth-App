@@ -118,6 +118,10 @@ export const authConfig = {
         windowSeconds: 15 * 60, // 15 minutes
         maxAttempts: 5, // per IP+email within the window
     },
+    // Per-IP limiters on other sensitive endpoints (defense in depth + DoS protection).
+    registerRateLimit: { windowSeconds: 60 * 60, max: 20 }, // account-creation spam
+    mfaRateLimit: { windowSeconds: 15 * 60, max: 10 }, // second-factor brute force
+    tokenRateLimit: { windowSeconds: 15 * 60, max: 60 }, // code/secret guessing + DoS
     mfa: {
         issuer: 'OAuthPlatform',
         totpWindow: 1, // accept codes +/- 1 step (30s) to tolerate clock drift
@@ -216,22 +220,26 @@ export function validateConfig(): void {
         }
     });
 
-    // Production-specific validations
-    if (serverConfig.isProduction) {
+    // Insecure dev fallbacks (weak session secret, predictable JWT-key encryption secret,
+    // non-Secure cookies) are ONLY safe in an explicit local environment. Any other value of
+    // NODE_ENV — production, staging, or (dangerously) unset — must supply real secrets, so a
+    // misconfigured deploy fails loudly instead of silently running on guessable keys.
+    const isLocalEnv = serverConfig.env === 'development' || serverConfig.env === 'test';
+    if (!isLocalEnv) {
         if (!process.env.SESSION_SECRET || process.env.SESSION_SECRET.length < 32) {
-            errors.push('SESSION_SECRET must be at least 32 characters in production');
-        }
-
-        if (!process.env.DB_PASSWORD) {
-            errors.push('DB_PASSWORD is required in production');
-        }
-
-        if (!process.env.REDIS_PASSWORD) {
-            errors.push('REDIS_PASSWORD is required in production');
+            errors.push(`SESSION_SECRET must be set (>=32 chars) when NODE_ENV="${serverConfig.env}"`);
         }
 
         if (!process.env.JWT_KEY_ENCRYPTION_SECRET || process.env.JWT_KEY_ENCRYPTION_SECRET.length < 32) {
-            errors.push('JWT_KEY_ENCRYPTION_SECRET must be at least 32 characters in production');
+            errors.push(`JWT_KEY_ENCRYPTION_SECRET must be set (>=32 chars) when NODE_ENV="${serverConfig.env}"`);
+        }
+
+        if (!process.env.DB_PASSWORD) {
+            errors.push(`DB_PASSWORD is required when NODE_ENV="${serverConfig.env}"`);
+        }
+
+        if (!process.env.REDIS_PASSWORD) {
+            errors.push(`REDIS_PASSWORD is required when NODE_ENV="${serverConfig.env}"`);
         }
     }
 
