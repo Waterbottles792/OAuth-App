@@ -259,7 +259,14 @@ DELETE /api/v1/clients/:clientId (Admin only)
 
 ## Phase 3: Authorization Code Flow
 
-**Status**: ⏳ Not Started
+**Status**: ✅ Completed (2026-06-13)
+
+> Implemented: migration 003 (`authorization_codes`, sha256-hashed + single-use + 10-min
+> TTL + S256-only CHECK), authcode.service (`issueCode` / atomic single-use `consumeCode`),
+> and `GET`/`POST /api/v1/oauth/authorize`. Strict error semantics (no redirect on bad
+> client/redirect_uri; OAuth error redirects otherwise), PKCE S256 enforced, scope allow-list
+> checked, consent recorded. Consent prompt is JSON for now (frontend is Phase 7). 57 tests
+> passing. See `PLAN.md` → Phase 3 Handoff Notes (incl. exactly what Phase 4 consumes).
 
 ### Purpose
 Issue authorization codes securely (NO TOKENS YET).
@@ -306,12 +313,12 @@ POST /api/v1/oauth/authorize (consent submission)
 - ❌ JWT generation
 
 ### Security Checklist
-- [ ] PKCE: code_challenge_method MUST be S256 (not plain)
-- [ ] State parameter validated (CSRF protection)
-- [ ] Redirect URI exact match
-- [ ] Authorization code expires in 10 minutes
-- [ ] Authorization code single-use enforced
-- [ ] User consent stored
+- [x] PKCE: code_challenge_method MUST be S256 (not plain)
+- [x] State parameter validated (echoed back verbatim; CSRF protection — PKCE is primary)
+- [x] Redirect URI exact match
+- [x] Authorization code expires in 10 minutes
+- [x] Authorization code single-use enforced (atomic conditional UPDATE)
+- [x] User consent stored
 
 ---
 

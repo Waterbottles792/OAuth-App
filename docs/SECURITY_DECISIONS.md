@@ -348,12 +348,12 @@ if (!isAuthorized) {
 - [x] Client allow-list for scopes
 - [x] Client metadata validated
 
-### Phase 3: Authorization Code Flow
-- [ ] PKCE code_challenge validated
-- [ ] State parameter validated (CSRF protection)
-- [ ] Authorization code single-use
-- [ ] Authorization code short-lived (10 minutes max)
-- [ ] Authorization code bound to client_id + redirect_uri + PKCE
+### Phase 3: Authorization Code Flow ✅ (2026-06-13)
+- [x] PKCE code_challenge validated (S256 only)
+- [x] State parameter validated (echoed back verbatim)
+- [x] Authorization code single-use
+- [x] Authorization code short-lived (10 minutes max)
+- [x] Authorization code bound to client_id + redirect_uri + PKCE
 
 ### Phase 4: Access Tokens
 - [ ] JWT signed with RS256/ES256

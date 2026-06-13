@@ -19,6 +19,7 @@ import { isAppError } from './lib/errors';
 import { requireAuth, requireAdmin } from './middleware/auth.middleware';
 import authRoutes from './routes/auth.routes';
 import clientRoutes from './routes/clients.routes';
+import oauthRoutes from './routes/oauth.routes';
 
 // Validate configuration before doing anything else.
 validateConfig();
@@ -102,7 +103,7 @@ export function createApp() {
             status: 'healthy',
             timestamp: new Date().toISOString(),
             environment: serverConfig.env,
-            phase: 'PHASE_2_CLIENT_TRUST',
+            phase: 'PHASE_3_AUTHORIZATION_CODE',
         });
     });
 
@@ -110,12 +111,12 @@ export function createApp() {
         res.status(200).json({
             service: 'OAuth 2.1 + OIDC Authorization Server',
             version: serverConfig.apiVersion,
-            phase: 'Phase 2: Client & Trust Modeling',
+            phase: 'Phase 3: Authorization Code Flow',
             features: {
                 authentication: true, // Phase 1 ✅
                 mfa: true, // Phase 1 ✅
                 client_registry: true, // Phase 2 ✅
-                oauth_endpoints: false, // Phase 3+
+                authorization_endpoint: true, // Phase 3 ✅ (codes only)
                 token_issuance: false, // Phase 4+
                 refresh_tokens: false, // Phase 5+
                 openid_connect: false, // Phase 6+
@@ -127,6 +128,8 @@ export function createApp() {
     app.use(`/api/${serverConfig.apiVersion}/auth`, authRoutes);
     // Client registry is admin-only; guards applied before the router.
     app.use(`/api/${serverConfig.apiVersion}/clients`, requireAuth, requireAdmin, clientRoutes);
+    // OAuth authorization endpoint (authorize). Auth/consent handled inside the router.
+    app.use(`/api/${serverConfig.apiVersion}/oauth`, oauthRoutes);
 
     // ---- 404 ----
     app.use((req: Request, res: Response) => {
@@ -166,7 +169,7 @@ if (require.main === module) {
     const server = app.listen(serverConfig.port, () => {
         logger.info(`
 ╔══════════════════════════════════════════════════════════════════════╗
-║  OAuth 2.1 + OIDC Authorization Server — Phase 2: Client & Trust      ║
+║  OAuth 2.1 + OIDC Authorization Server — Phase 3: Authorization Code  ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
 🚀 Server running on port ${serverConfig.port}
@@ -179,6 +182,9 @@ if (require.main === module) {
 
 📍 Client registry (/api/${serverConfig.apiVersion}/clients, admin only):
    POST /   GET /   GET /:clientId   DELETE /:clientId
+
+📍 OAuth (/api/${serverConfig.apiVersion}/oauth):
+   GET /authorize   POST /authorize   (authorization codes — no tokens yet)
 
 ✅ Configuration validated   ✅ Security middleware active
     `);

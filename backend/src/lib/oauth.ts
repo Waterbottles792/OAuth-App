@@ -54,3 +54,9 @@ export function scopesNotAllowed(requested: string[], allowed: string[]): string
     const allowedSet = new Set(allowed);
     return requested.filter((s) => !allowedSet.has(s));
 }
+
+/** Parse an OAuth `scope` parameter (space-delimited) into a de-duplicated array. */
+export function parseScopes(scope: string | undefined): string[] {
+    if (!scope) return [];
+    return [...new Set(scope.trim().split(/\s+/).filter(Boolean))];
+}

@@ -79,7 +79,7 @@ makes it survivable across context resets.
 | 0 | Foundation | ✅ Complete | 2026-02-02 |
 | 1 | Identity Core (+ project infra: DB layer, migrations, tests, validation) | ✅ Complete | 2026-06-13 |
 | 2 | Client & Trust Modeling | ✅ Complete | 2026-06-13 |
-| 3 | Authorization Code Flow (PKCE) | ⏳ Not started | — |
+| 3 | Authorization Code Flow (PKCE) | ✅ Complete | 2026-06-13 |
 | 4 | Token Service (JWT issuance) | ⏳ Not started | — |
 | 5 | Refresh Tokens & Revocation | ⏳ Not started | — |
 | 6 | OpenID Connect | ⏳ Not started | — |
@@ -339,13 +339,48 @@ consent records. **Still no `/authorize`, no codes, no tokens.**
 - [ ] **No** `/token` endpoint, no JWTs.
 
 ### Definition of Done
-- [ ] Acceptance criteria pass; Phase 3 checklist in PHASE_GUIDE ticked.
-- [ ] Update Current Status + Handoff Notes. Commit `feat: Phase 3 - Authorization Code Flow`.
+- [x] Acceptance criteria pass; Phase 3 checklist in PHASE_GUIDE ticked. **57/57 tests pass.**
+- [x] Update Current Status + Handoff Notes. Commit `feat: Phase 3 - Authorization Code Flow`.
 
-### Handoff Notes
-- _Consent UX approach for now (API-only vs minimal page):_ …
-- _Where the code-challenge is persisted for Phase 4 verification:_ …
-- _Anything Phase 4 needs:_ …
+### Handoff Notes (filled in 2026-06-13)
+- **Migration:** `003_authorization_codes.sql`. `code_hash` (sha256 hex) is the PK — the raw
+  code is never stored. FK→oauth_clients + users (ON DELETE CASCADE). A DB CHECK pins
+  `code_challenge_method = 'S256'`. Test setup needs no change: `TRUNCATE users, oauth_clients
+  CASCADE` already clears authorization_codes.
+- **Endpoints:** `GET /api/v1/oauth/authorize` and `POST /api/v1/oauth/authorize` (in
+  `routes/oauth.routes.ts`). Mounted at `/api/v1/oauth`.
+- **Error semantics (important, RFC 6749 §4.1.2.1):** invalid `client_id` or `redirect_uri`
+  → **400 JSON page error, NO redirect** (can't trust the target). Every other error →
+  **302 redirect** back to the validated `redirect_uri` with `error`/`error_description`/`state`.
+  The validation ordering in `validateAuthorizeRequest` enforces this; don't reorder it.
+- **PKCE:** `code_challenge` required and `code_challenge_method` must be exactly `S256`
+  (`plain` and absent are rejected). Phase 3 only **stores** the challenge — the
+  `code_verifier` check happens in Phase 4.
+- **Consent UX (deviation — API-only for now):** when consent is needed, `GET /authorize`
+  returns **200 JSON** `{ consent_required, client, scopes, authorization_request }` instead
+  of an HTML page (no frontend until Phase 7). The decision is submitted via
+  `POST /authorize` with the same params + `approved: true|false`. POST **re-validates
+  everything** (never trusts the GET) and requires an authenticated session (`requireAuth`).
+  On approve: records consent (`consent.service`, keyed on client UUID), issues a code,
+  302-redirects with `code`+`state`. On deny: 302 with `error=access_denied`. Already-consented
+  users skip the prompt and get a code straight from the GET.
+- **Unauthenticated GET** → 302 to `oauthFlowConfig.loginUrl` (default
+  `http://localhost:3000/login`, env `LOGIN_URL`) with `return_to` = absolute original
+  authorize URL, so Phase 7's login can send the user back to resume.
+- **state policy:** optional; echoed back verbatim on every success/error redirect when present.
+- **Code-challenge persistence for Phase 4:** stored in `authorization_codes.code_challenge`
+  (+ `code_challenge_method`). Phase 4 reads it via `authcode.service.consumeCode`.
+- **Anything Phase 4 needs (the token endpoint):**
+  - `authcode.service.consumeCode(rawCode)` is already written + tested. It does an **atomic,
+    single-use** conditional UPDATE (`used=FALSE AND expires_at>NOW()` → `used=TRUE … RETURNING`)
+    so concurrent exchanges can't both win, and returns `{ ok, reason?, record? }` where
+    `reason ∈ not_found|expired|already_used` (use `already_used` for reuse detection).
+  - The returned record carries `client_id` (UUID), `user_id`, `redirect_uri`, `scopes`,
+    `code_challenge`. Phase 4 must: verify the client (confidential → `client.service.
+    verifyClientSecret`; public → client_id match), check `redirect_uri` equals the one in the
+    record, and verify PKCE: `base64url(sha256(code_verifier)) === record.code_challenge`.
+  - Then mint the JWT access token (RS256/ES256, ≤15 min) per Phase 4. Add migration
+    `004_*.sql` for `jwt_keys`. Still no refresh tokens (Phase 5).
 
 ---
 

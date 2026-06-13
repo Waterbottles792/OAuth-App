@@ -127,6 +127,17 @@ export const authConfig = {
 } as const;
 
 /**
+ * OAuth flow configuration (Phase 3+). Lifetimes and the issuer identity.
+ */
+export const oauthFlowConfig = {
+    // Authorization code: short-lived and single-use (decision: 10 minutes max).
+    authorizationCodeTtlSeconds: 10 * 60,
+    // Where the authorization endpoint sends an unauthenticated user to log in. The frontend
+    // is expected to send the user back to the original /authorize URL afterwards.
+    loginUrl: process.env.LOGIN_URL || 'http://localhost:3000/login',
+} as const;
+
+/**
  * Logging Configuration
  */
 export const loggingConfig = {
