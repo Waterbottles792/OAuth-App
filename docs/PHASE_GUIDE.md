@@ -58,7 +58,13 @@ curl http://localhost:3001/health
 
 ## Phase 1: Identity Core
 
-**Status**: ⏳ Not Started
+**Status**: ✅ Completed (2026-06-13)
+
+> Implemented: DB pool + custom migration runner, Redis client, zod validation, typed
+> errors, Argon2id passwords, Redis-backed hashed sessions, TOTP + single-use backup-code
+> MFA, per-account lockout + per-IP/email rate limiting, and auth routes
+> (`register/login/mfa/logout/me`). 22 tests passing. See `PLAN.md` → Phase 1 Handoff Notes
+> for design decisions and the MFA endpoint deviation.
 
 ### Purpose
 Build secure authentication independent of OAuth.
@@ -150,13 +156,13 @@ POST /api/v1/auth/mfa/verify
 - ❌ Consent screens
 
 ### Security Checklist
-- [ ] Passwords hashed with Argon2id (m=64MB, t=3, p=4)
-- [ ] Rate limiting: Max 5 login attempts per 15 minutes per IP
-- [ ] Account lockout: Lock after 5 failed attempts, unlock after 1 hour
-- [ ] Session tokens: 32 bytes random, stored hashed in Redis
-- [ ] Session expiry: 24 hours, sliding window
-- [ ] MFA: TOTP (6-digit, 30s window)
-- [ ] Backup codes: 10 codes, single-use, hashed
+- [x] Passwords hashed with Argon2id (m=64MB, t=3, p=4)
+- [x] Rate limiting: Max 5 login attempts per 15 minutes per IP (+email)
+- [x] Account lockout: Lock after 5 failed attempts, unlock after 1 hour
+- [x] Session tokens: 32 bytes random, stored hashed (sha256) in Redis
+- [x] Session expiry: 24 hours, sliding window
+- [x] MFA: TOTP (6-digit, 30s window)
+- [x] Backup codes: 10 codes, single-use, hashed
 
 ### Testing
 ```bash

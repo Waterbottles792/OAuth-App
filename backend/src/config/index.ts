@@ -76,8 +76,15 @@ export const securityConfig = {
 
     // Session configuration (used in Phase 1+)
     session: {
-        secret: process.env.SESSION_SECRET || '',
+        // Dev fallback only; production startup validation (below) requires a real value.
+        secret:
+            process.env.SESSION_SECRET ||
+            (process.env.NODE_ENV === 'production'
+                ? ''
+                : 'dev-only-insecure-session-secret-change-me-32+'),
         cookieMaxAge: parseInt(process.env.SESSION_COOKIE_MAX_AGE || '86400000', 10), // 24 hours
+        cookieName: 'sid',
+        mfaCookieName: 'mfa_pending',
 
         // Security flags for session cookies
         cookieOptions: {
@@ -86,6 +93,36 @@ export const securityConfig = {
             sameSite: 'lax' as const, // CSRF protection
             path: '/',
         },
+    },
+} as const;
+
+/**
+ * Identity Core (Phase 1) tunables. Centralized so security-relevant numbers live in
+ * one place and are referenced by name (never hardcoded in services).
+ */
+export const authConfig = {
+    // Argon2id parameters (decision: m=64MB, t=3, p=4)
+    argon2: {
+        memoryCost: 64 * 1024, // KiB => 64 MB
+        timeCost: 3,
+        parallelism: 4,
+    },
+    session: {
+        ttlSeconds: 24 * 60 * 60, // 24h, refreshed on use (sliding window)
+    },
+    lockout: {
+        maxFailedAttempts: 5, // lock the account after this many consecutive failures
+        lockDurationSeconds: 60 * 60, // 1 hour
+    },
+    loginRateLimit: {
+        windowSeconds: 15 * 60, // 15 minutes
+        maxAttempts: 5, // per IP+email within the window
+    },
+    mfa: {
+        issuer: 'OAuthPlatform',
+        totpWindow: 1, // accept codes +/- 1 step (30s) to tolerate clock drift
+        backupCodeCount: 10,
+        pendingChallengeTtlSeconds: 5 * 60, // time to complete the MFA step after password
     },
 } as const;
 

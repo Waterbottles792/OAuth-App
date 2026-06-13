@@ -1,246 +1,188 @@
 /**
  * OAuth 2.1 + OIDC Authorization Server
- * 
- * PHASE 0: Foundation - Minimal server setup with security middleware
- * 
- * SECURITY BOUNDARIES:
- * - NO OAuth endpoints (Phase 3+)
- * - NO authentication logic (Phase 1+)
- * - NO token generation (Phase 4+)
- * - NO user management (Phase 1+)
- * 
- * This server currently provides:
- * - Basic Express setup with security headers
- * - CORS configuration
- * - Health check endpoint
- * - Request logging
+ *
+ * PHASE 1: Identity Core — user registration, login, server-side sessions, MFA.
+ *
+ * SECURITY BOUNDARIES (still not implemented — later phases):
+ * - NO OAuth endpoints (/authorize, /token)        (Phase 3+)
+ * - NO token issuance / JWTs                        (Phase 4+)
+ * - NO OAuth clients / consent                      (Phase 2+)
  */
 
 import express, { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
-import { serverConfig, securityConfig, validateConfig } from './config';
+import cookieParser from 'cookie-parser';
 import winston from 'winston';
+import { serverConfig, securityConfig, validateConfig } from './config';
+import { isAppError } from './lib/errors';
+import authRoutes from './routes/auth.routes';
 
-// Validate configuration before starting server
+// Validate configuration before doing anything else.
 validateConfig();
 
-// Initialize Express application
-const app = express();
-
 // ============================================
-// LOGGING SETUP
+// LOGGING
 // ============================================
-const logger = winston.createLogger({
+export const logger = winston.createLogger({
     level: 'info',
     format: winston.format.combine(
         winston.format.timestamp(),
         winston.format.errors({ stack: true }),
-        winston.format.json()
+        winston.format.json(),
     ),
     transports: [
         new winston.transports.Console({
-            format: winston.format.combine(
-                winston.format.colorize(),
-                winston.format.simple()
-            ),
+            format: winston.format.combine(winston.format.colorize(), winston.format.simple()),
         }),
     ],
 });
 
 // ============================================
-// SECURITY MIDDLEWARE
+// APP FACTORY
 // ============================================
+export function createApp() {
+    const app = express();
 
-/**
- * Helmet: Sets security-related HTTP headers
- * - X-Content-Type-Options: nosniff
- * - X-Frame-Options: DENY
- * - X-XSS-Protection: 1; mode=block
- * - Strict-Transport-Security (in production)
- */
-app.use(helmet({
-    contentSecurityPolicy: {
-        directives: {
-            defaultSrc: ["'self'"],
-            styleSrc: ["'self'", "'unsafe-inline'"],
-            scriptSrc: ["'self'"],
-            imgSrc: ["'self'", 'data:', 'https:'],
-        },
-    },
-    hsts: {
-        maxAge: 31536000, // 1 year
-        includeSubDomains: true,
-        preload: true,
-    },
-}));
+    // Trust the first proxy hop so req.ip reflects the real client behind a load balancer.
+    app.set('trust proxy', 1);
 
-/**
- * CORS: Explicit origin allowlist
- * NO wildcards allowed - exact origin matching only
- */
-app.use(cors({
-    origin: (origin, callback) => {
-        // Allow requests with no origin (mobile apps, Postman, etc.)
-        if (!origin) return callback(null, true);
+    app.use(
+        helmet({
+            contentSecurityPolicy: {
+                directives: {
+                    defaultSrc: ["'self'"],
+                    styleSrc: ["'self'", "'unsafe-inline'"],
+                    scriptSrc: ["'self'"],
+                    imgSrc: ["'self'", 'data:', 'https:'],
+                },
+            },
+            hsts: { maxAge: 31536000, includeSubDomains: true, preload: true },
+        }),
+    );
 
-        if (securityConfig.corsOrigins.includes(origin)) {
-            callback(null, true);
-        } else {
-            logger.warn(`CORS blocked origin: ${origin}`);
-            callback(new Error('CORS policy violation'));
-        }
-    },
-    credentials: true, // Allow cookies
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-}));
+    app.use(
+        cors({
+            origin: (origin, callback) => {
+                if (!origin) return callback(null, true);
+                if (securityConfig.corsOrigins.includes(origin)) return callback(null, true);
+                logger.warn(`CORS blocked origin: ${origin}`);
+                callback(new Error('CORS policy violation'));
+            },
+            credentials: true,
+            methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+            allowedHeaders: ['Content-Type', 'Authorization'],
+        }),
+    );
 
-/**
- * Body parsing middleware
- * Rate limiting will be added in Phase 1
- */
-app.use(express.json({ limit: '10kb' })); // Prevent large payloads
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+    app.use(express.json({ limit: '10kb' }));
+    app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+    app.use(cookieParser(securityConfig.session.secret));
 
-/**
- * Request logging middleware
- */
-app.use((req: Request, res: Response, next: NextFunction) => {
-    const startTime = Date.now();
+    // Request logging
+    app.use((req: Request, res: Response, next: NextFunction) => {
+        const startTime = Date.now();
+        res.on('finish', () => {
+            logger.info({
+                method: req.method,
+                path: req.path,
+                status: res.statusCode,
+                duration: `${Date.now() - startTime}ms`,
+                ip: req.ip,
+            });
+        });
+        next();
+    });
 
-    res.on('finish', () => {
-        const duration = Date.now() - startTime;
-        logger.info({
-            method: req.method,
-            path: req.path,
-            status: res.statusCode,
-            duration: `${duration}ms`,
-            ip: req.ip,
+    // ---- Health / status ----
+    app.get('/health', (_req: Request, res: Response) => {
+        res.status(200).json({
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+            environment: serverConfig.env,
+            phase: 'PHASE_1_IDENTITY_CORE',
         });
     });
 
-    next();
-});
-
-// ============================================
-// HEALTH CHECK ENDPOINT
-// ============================================
-
-/**
- * Health check endpoint for load balancers and monitoring
- */
-app.get('/health', (req: Request, res: Response) => {
-    res.status(200).json({
-        status: 'healthy',
-        timestamp: new Date().toISOString(),
-        environment: serverConfig.env,
-        phase: 'PHASE_0_FOUNDATION',
-    });
-});
-
-/**
- * API version endpoint
- */
-app.get(`/api/${serverConfig.apiVersion}/status`, (req: Request, res: Response) => {
-    res.status(200).json({
-        service: 'OAuth 2.1 + OIDC Authorization Server',
-        version: serverConfig.apiVersion,
-        phase: 'Phase 0: Foundation',
-        features: {
-            authentication: false,      // Phase 1+
-            oauth_endpoints: false,      // Phase 3+
-            token_issuance: false,       // Phase 4+
-            refresh_tokens: false,       // Phase 5+
-            openid_connect: false,       // Phase 6+
-        },
-    });
-});
-
-// ============================================
-// INTENTIONALLY NOT IMPLEMENTED (YET)
-// ============================================
-
-// ❌ NO /authorize endpoint (Phase 3+)
-// ❌ NO /token endpoint (Phase 4+)
-// ❌ NO /userinfo endpoint (Phase 6+)
-// ❌ NO /register endpoint (Phase 1+)
-// ❌ NO /login endpoint (Phase 1+)
-// ❌ NO authentication middleware (Phase 1+)
-// ❌ NO session management (Phase 1+)
-// ❌ NO rate limiting (Phase 1+)
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-/**
- * 404 handler
- */
-app.use((req: Request, res: Response) => {
-    logger.warn(`404 Not Found: ${req.method} ${req.path}`);
-    res.status(404).json({
-        error: 'not_found',
-        message: 'Endpoint not found',
-        phase: 'Phase 0: Foundation',
-        note: 'OAuth and authentication endpoints will be available in future phases',
-    });
-});
-
-/**
- * Global error handler
- */
-app.use((err: Error, req: Request, res: Response, next: NextFunction) => {
-    logger.error({
-        error: err.message,
-        stack: err.stack,
-        path: req.path,
-        method: req.method,
+    app.get(`/api/${serverConfig.apiVersion}/status`, (_req: Request, res: Response) => {
+        res.status(200).json({
+            service: 'OAuth 2.1 + OIDC Authorization Server',
+            version: serverConfig.apiVersion,
+            phase: 'Phase 1: Identity Core',
+            features: {
+                authentication: true, // Phase 1 ✅
+                mfa: true, // Phase 1 ✅
+                oauth_endpoints: false, // Phase 3+
+                token_issuance: false, // Phase 4+
+                refresh_tokens: false, // Phase 5+
+                openid_connect: false, // Phase 6+
+            },
+        });
     });
 
-    res.status(500).json({
-        error: 'internal_server_error',
-        message: serverConfig.isDevelopment ? err.message : 'An error occurred',
+    // ---- Feature routes ----
+    app.use(`/api/${serverConfig.apiVersion}/auth`, authRoutes);
+
+    // ---- 404 ----
+    app.use((req: Request, res: Response) => {
+        logger.warn(`404 Not Found: ${req.method} ${req.path}`);
+        res.status(404).json({ error: 'not_found', message: 'Endpoint not found' });
     });
-});
+
+    // ---- Global error handler ----
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    app.use((err: Error, req: Request, res: Response, _next: NextFunction) => {
+        if (isAppError(err)) {
+            if (err.statusCode >= 500) {
+                logger.error({ code: err.code, message: err.message, detail: err.logDetail });
+            } else {
+                logger.warn({ code: err.code, message: err.message, path: req.path });
+            }
+            res.status(err.statusCode).json({ error: err.code, message: err.message });
+            return;
+        }
+
+        logger.error({ error: err.message, stack: err.stack, path: req.path, method: req.method });
+        res.status(500).json({
+            error: 'internal_server_error',
+            message: serverConfig.isDevelopment ? err.message : 'An error occurred',
+        });
+    });
+
+    return app;
+}
+
+const app = createApp();
 
 // ============================================
-// SERVER STARTUP
+// SERVER STARTUP (only when run directly)
 // ============================================
-
-const server = app.listen(serverConfig.port, () => {
-    logger.info(`
+if (require.main === module) {
+    const server = app.listen(serverConfig.port, () => {
+        logger.info(`
 ╔════════════════════════════════════════════════════════════════╗
-║  OAuth 2.1 + OIDC Authorization Server                        ║
-║  Phase 0: Foundation                                           ║
+║  OAuth 2.1 + OIDC Authorization Server — Phase 1: Identity Core ║
 ╚════════════════════════════════════════════════════════════════╝
 
 🚀 Server running on port ${serverConfig.port}
 🌍 Environment: ${serverConfig.env}
 🔒 CORS origins: ${securityConfig.corsOrigins.join(', ')}
 
-📍 Endpoints:
-   GET  /health                      - Health check
-   GET  /api/${serverConfig.apiVersion}/status    - Service status
+📍 Auth endpoints (/api/${serverConfig.apiVersion}/auth):
+   POST /register   POST /login   POST /mfa/login
+   POST /logout     GET  /me      POST /mfa/enable   POST /mfa/verify
 
-⚠️  Phase 0 Status:
-   ❌ Authentication not implemented (Phase 1)
-   ❌ OAuth endpoints not implemented (Phase 3+)
-   ❌ Token issuance not implemented (Phase 4+)
-
-✅ Configuration validated
-✅ Security middleware active
-✅ Ready for Phase 1 implementation
-  `);
-});
-
-// Graceful shutdown
-process.on('SIGTERM', () => {
-    logger.info('SIGTERM received, shutting down gracefully');
-    server.close(() => {
-        logger.info('Server closed');
-        process.exit(0);
+✅ Configuration validated   ✅ Security middleware active
+    `);
     });
-});
+
+    process.on('SIGTERM', () => {
+        logger.info('SIGTERM received, shutting down gracefully');
+        server.close(() => {
+            logger.info('Server closed');
+            process.exit(0);
+        });
+    });
+}
 
 export default app;

@@ -334,13 +334,13 @@ if (!isAuthorized) {
 
 ## 📋 Security Checklist (Per Phase)
 
-### Phase 1: Identity Core
-- [ ] Passwords hashed with Argon2id (not bcrypt, not SHA)
-- [ ] Rate limiting on login endpoint (prevent brute force)
-- [ ] Account lockout after N failed attempts
-- [ ] MFA (TOTP + backup codes)
-- [ ] Session tokens in HTTP-only cookies
-- [ ] Redis session storage with TTL
+### Phase 1: Identity Core ✅ (2026-06-13)
+- [x] Passwords hashed with Argon2id (not bcrypt, not SHA)
+- [x] Rate limiting on login endpoint (prevent brute force)
+- [x] Account lockout after N failed attempts
+- [x] MFA (TOTP + backup codes)
+- [x] Session tokens in HTTP-only cookies
+- [x] Redis session storage with TTL
 
 ### Phase 2: Client Management
 - [ ] Client secrets hashed (not plaintext)

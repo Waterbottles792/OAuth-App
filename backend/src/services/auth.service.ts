@@ -1,0 +1,179 @@
+/**
+ * Authentication orchestration: registration, login (with account lockout + MFA branch),
+ * MFA-login completion, and lookups. This service ties together password/session/mfa.
+ *
+ * Account lockout (DB-level, per account) is distinct from login rate limiting
+ * (Redis-level, per IP+email, in middleware) — defense in depth, both required by the
+ * Phase 1 checklist.
+ */
+
+import { query, withTransaction } from '../db/pool';
+import { authConfig, serverConfig } from '../config';
+import { ConflictError, UnauthorizedError } from '../lib/errors';
+import { randomToken } from '../lib/crypto';
+import { mailer } from '../lib/mailer';
+import { hashPassword, verifyPassword } from './password.service';
+import { createSession, createMfaChallenge, consumeMfaChallenge, SessionContext } from './session.service';
+import { isMfaEnabled, verifyChallenge } from './mfa.service';
+
+export interface User {
+    id: string;
+    email: string;
+    email_verified: boolean;
+    is_admin: boolean;
+    locked_at: Date | null;
+    failed_login_attempts: number;
+}
+
+interface UserWithHash extends User {
+    password_hash: string;
+}
+
+const PUBLIC_COLUMNS = 'id, email, email_verified, is_admin, locked_at, failed_login_attempts';
+
+export async function getUserById(id: string): Promise<User | null> {
+    const { rows } = await query<User>(`SELECT ${PUBLIC_COLUMNS} FROM users WHERE id = $1`, [id]);
+    return rows[0] ?? null;
+}
+
+async function getUserByEmail(email: string): Promise<UserWithHash | null> {
+    const { rows } = await query<UserWithHash>(
+        `SELECT ${PUBLIC_COLUMNS}, password_hash FROM users WHERE email = $1`,
+        [email],
+    );
+    return rows[0] ?? null;
+}
+
+/**
+ * Register a new user. Email is assumed pre-normalized (lowercased/trimmed) by validation.
+ * Sends a verification link via the (dev) mailer. Does not create a session.
+ */
+export async function register(email: string, password: string): Promise<{ userId: string }> {
+    const existing = await getUserByEmail(email);
+    if (existing) {
+        // Same response shape as success would be nicer for enumeration resistance, but the
+        // unique constraint makes silent success impossible; surface a clear conflict here.
+        throw new ConflictError('An account with this email already exists');
+    }
+
+    const passwordHash = await hashPassword(password);
+    const userId = await withTransaction(async (client) => {
+        const { rows } = await client.query<{ id: string }>(
+            'INSERT INTO users (email, password_hash) VALUES ($1, $2) RETURNING id',
+            [email, passwordHash],
+        );
+        return rows[0].id;
+    });
+
+    // Dev email verification: log a link. (Verification enforcement is deferred — see notes.)
+    const verifyToken = randomToken(32);
+    await mailer.send(
+        email,
+        'Verify your email',
+        `Confirm your account:\nhttp://localhost:${serverConfig.port}/api/v1/auth/verify-email?token=${verifyToken}`,
+    );
+
+    return { userId };
+}
+
+function isLocked(user: { locked_at: Date | null }): boolean {
+    if (!user.locked_at) return false;
+    const unlockAt = user.locked_at.getTime() + authConfig.lockout.lockDurationSeconds * 1000;
+    return Date.now() < unlockAt;
+}
+
+async function recordFailedAttempt(user: UserWithHash): Promise<void> {
+    const attempts = user.failed_login_attempts + 1;
+    if (attempts >= authConfig.lockout.maxFailedAttempts) {
+        await query('UPDATE users SET failed_login_attempts = $1, locked_at = NOW() WHERE id = $2', [
+            attempts,
+            user.id,
+        ]);
+    } else {
+        await query('UPDATE users SET failed_login_attempts = $1 WHERE id = $2', [attempts, user.id]);
+    }
+}
+
+async function clearFailures(userId: string): Promise<void> {
+    await query(
+        'UPDATE users SET failed_login_attempts = 0, locked_at = NULL WHERE id = $1',
+        [userId],
+    );
+}
+
+export type LoginResult =
+    | { status: 'authenticated'; sessionToken: string; user: User }
+    | { status: 'mfa_required'; challengeToken: string };
+
+/**
+ * Verify credentials. On success, either issues a session or (if MFA is enabled) returns a
+ * pending challenge. Uses a uniform UnauthorizedError for unknown-user and wrong-password
+ * so the two are indistinguishable to a caller.
+ */
+export async function login(
+    email: string,
+    password: string,
+    ctx: SessionContext = {},
+): Promise<LoginResult> {
+    const user = await getUserByEmail(email);
+
+    if (!user) {
+        // Spend roughly-equivalent time to a real verify to blunt timing enumeration.
+        await verifyPassword(
+            '$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+            password,
+        );
+        throw new UnauthorizedError('Invalid email or password');
+    }
+
+    if (isLocked(user)) {
+        throw new UnauthorizedError('Account is temporarily locked. Try again later.');
+    }
+
+    const ok = await verifyPassword(user.password_hash, password);
+    if (!ok) {
+        await recordFailedAttempt(user);
+        throw new UnauthorizedError('Invalid email or password');
+    }
+
+    // Success: clear any prior failures / expired lock.
+    if (user.failed_login_attempts > 0 || user.locked_at) {
+        await clearFailures(user.id);
+    }
+
+    const publicUser: User = {
+        id: user.id,
+        email: user.email,
+        email_verified: user.email_verified,
+        is_admin: user.is_admin,
+        locked_at: null,
+        failed_login_attempts: 0,
+    };
+
+    if (await isMfaEnabled(user.id)) {
+        const challengeToken = await createMfaChallenge(user.id);
+        return { status: 'mfa_required', challengeToken };
+    }
+
+    const sessionToken = await createSession(user.id, ctx);
+    return { status: 'authenticated', sessionToken, user: publicUser };
+}
+
+/** Complete a login that required MFA: validate the second factor, then issue a session. */
+export async function completeMfaLogin(
+    challengeToken: string,
+    code: string,
+    ctx: SessionContext = {},
+): Promise<{ sessionToken: string; user: User }> {
+    const userId = await consumeMfaChallenge(challengeToken);
+    if (!userId) throw new UnauthorizedError('MFA challenge expired or invalid');
+
+    const verified = await verifyChallenge(userId, code);
+    if (!verified) throw new UnauthorizedError('Invalid MFA code');
+
+    const user = await getUserById(userId);
+    if (!user) throw new UnauthorizedError('Account not found');
+
+    const sessionToken = await createSession(userId, ctx);
+    return { sessionToken, user };
+}
