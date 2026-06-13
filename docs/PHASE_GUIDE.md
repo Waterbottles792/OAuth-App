@@ -189,7 +189,13 @@ done
 
 ## Phase 2: Client & Trust Modeling
 
-**Status**: ⏳ Not Started
+**Status**: ✅ Completed (2026-06-13)
+
+> Implemented: `oauth_clients` / `oauth_scopes` / `user_consents` (migration 002),
+> client.service (create/get/list/delete, Argon2id secret hash, exact redirect-URI
+> validation, scope-catalogue checks, `verifyClientSecret`), consent.service, and
+> admin-only client routes. PKCE is forced on for all clients. 41 tests passing.
+> See `PLAN.md` → Phase 2 Handoff Notes.
 
 ### Purpose
 Define who is allowed to request access.
@@ -243,11 +249,11 @@ DELETE /api/v1/clients/:clientId (Admin only)
 - ❌ Tokens
 
 ### Security Checklist
-- [ ] Client secrets hashed with Argon2id
-- [ ] Redirect URIs: Exact match only, no wildcards
-- [ ] Public clients: PKCE mandatory
-- [ ] Confidential clients: PKCE recommended
-- [ ] Scope validation: Client can only request allowed scopes
+- [x] Client secrets hashed with Argon2id
+- [x] Redirect URIs: Exact match only, no wildcards
+- [x] Public clients: PKCE mandatory
+- [x] Confidential clients: PKCE mandatory (stricter than "recommended" — forced for all)
+- [x] Scope validation: Client can only request allowed scopes (subset of seeded catalogue)
 
 ---
 

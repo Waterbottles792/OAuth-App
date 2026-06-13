@@ -78,7 +78,7 @@ makes it survivable across context resets.
 |------:|-------|--------|---------------|
 | 0 | Foundation | ✅ Complete | 2026-02-02 |
 | 1 | Identity Core (+ project infra: DB layer, migrations, tests, validation) | ✅ Complete | 2026-06-13 |
-| 2 | Client & Trust Modeling | ⏳ Not started | — |
+| 2 | Client & Trust Modeling | ✅ Complete | 2026-06-13 |
 | 3 | Authorization Code Flow (PKCE) | ⏳ Not started | — |
 | 4 | Token Service (JWT issuance) | ⏳ Not started | — |
 | 5 | Refresh Tokens & Revocation | ⏳ Not started | — |
@@ -264,13 +264,41 @@ consent records. **Still no `/authorize`, no codes, no tokens.**
 - [ ] **No** `/authorize`, codes, or tokens added.
 
 ### Definition of Done
-- [ ] Acceptance criteria pass; Phase 2 checklist in PHASE_GUIDE ticked.
-- [ ] Update Current Status + Handoff Notes. Commit `feat: Phase 2 - Client & Trust Modeling`.
+- [x] Acceptance criteria pass; Phase 2 checklist in PHASE_GUIDE ticked. **41/41 tests pass.**
+- [x] Update Current Status + Handoff Notes. Commit `feat: Phase 2 - Client & Trust Modeling`.
 
-### Handoff Notes
-- _Admin-role mechanism chosen (flag on users? separate table?):_ …
-- _Default scopes seeded:_ …
-- _Anything Phase 3 needs:_ …
+### Handoff Notes (filled in 2026-06-13)
+- **Migration:** `002_oauth_clients.sql` → `oauth_clients`, `oauth_scopes`, `user_consents`.
+  A DB CHECK constraint enforces "confidential ⇒ has secret hash, public ⇒ no secret hash".
+  Test setup now truncates `users, oauth_clients` (cascades to consents/sessions/mfa);
+  seeded `oauth_scopes` are left intact.
+- **Default scopes seeded:** `openid`, `profile`, `email`, `read:profile`, `write:profile`.
+  A client's `allowedScopes` must be a subset of these (validated in `client.service`).
+- **Admin-role mechanism:** a boolean `is_admin` column on `users` (added in Phase 1's
+  migration). `requireAdmin` middleware guards the client routes. **To make an admin in dev:**
+  `UPDATE users SET is_admin = true WHERE email = '...'`. No self-serve admin signup (by design).
+- **Client model & rules:**
+  - `client_id` = `client_<random>` (public id); confidential clients also get a
+    `client_secret` (random 32B) returned **once** at creation and stored only as an
+    **Argon2id hash** (reuses `password.service.hashPassword`/`verifyPassword`).
+  - **PKCE is forced `require_pkce = TRUE` for every client** (honors SEC_DECISIONS #5,
+    which is stricter than PHASE_GUIDE's "recommended for confidential"). Clients cannot
+    disable it. Noted as a deliberate deviation.
+  - **Redirect URIs** validated at registration (`lib/oauth.ts`): absolute http/https only,
+    no `*`, no URL fragment, http allowed only for loopback hosts. Exact-match (no wildcards).
+- **New shared helpers for Phase 3** (already written + unit-tested, not yet enforced):
+  `lib/oauth.ts` → `validateRedirectUri`, `redirectUriMatches(registered, provided)`,
+  `scopesNotAllowed(requested, allowed)`. `client.service.verifyClientSecret` exists for the
+  Phase 4 token endpoint. `consent.service` → `recordConsent` / `getConsent` /
+  `hasConsentFor` / `revokeConsent` (keyed on the oauth_clients **UUID** `id`, not the
+  public `client_id` string — important).
+- **Endpoints added:** `POST/GET /api/v1/clients`, `GET/DELETE /api/v1/clients/:clientId`,
+  all behind `requireAuth + requireAdmin` (mounted in `server.ts`).
+- **Anything Phase 3 needs:** read a client with `client.service.getClientByClientId(clientId)`
+  (returns the full record incl. `redirect_uris`, `allowed_scopes`, `require_pkce`). Use the
+  `lib/oauth.ts` helpers to validate the incoming `redirect_uri` (exact match) and that the
+  requested `scope` ⊆ `allowed_scopes`. Write consent with `consent.service` using the
+  client's UUID `id`. Add migration `003_*.sql` for `authorization_codes`. Still **no tokens**.
 
 ---
 

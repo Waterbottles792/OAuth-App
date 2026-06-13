@@ -342,11 +342,11 @@ if (!isAuthorized) {
 - [x] Session tokens in HTTP-only cookies
 - [x] Redis session storage with TTL
 
-### Phase 2: Client Management
-- [ ] Client secrets hashed (not plaintext)
-- [ ] Redirect URI exact-match validation
-- [ ] Client allow-list for scopes
-- [ ] Client metadata validated
+### Phase 2: Client Management ✅ (2026-06-13)
+- [x] Client secrets hashed (not plaintext)
+- [x] Redirect URI exact-match validation
+- [x] Client allow-list for scopes
+- [x] Client metadata validated
 
 ### Phase 3: Authorization Code Flow
 - [ ] PKCE code_challenge validated

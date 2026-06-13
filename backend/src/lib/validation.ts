@@ -35,12 +35,19 @@ export const totpCodeSchema = z.object({
     code: z.string().trim().regex(/^[0-9A-Za-z]{6,10}$/, 'Invalid code format'),
 });
 
+export const createClientSchema = z.object({
+    name: z.string().trim().min(1, 'name is required').max(255),
+    clientType: z.enum(['confidential', 'public']),
+    redirectUris: z.array(z.string().min(1)).min(1, 'At least one redirect_uri is required'),
+    allowedScopes: z.array(z.string().min(1)).default([]),
+});
+
 /** Parse `data` against `schema`, throwing a ValidationError with a friendly message. */
 export function validate<T>(schema: z.ZodType<T>, data: unknown): T {
     const result = schema.safeParse(data);
     if (!result.success) {
         const first = result.error.issues[0];
-        throw new ValidationError(first?.message ?? 'Invalid request', result.error.flatten());
+        throw new ValidationError(first?.message ?? 'Invalid request', result.error.issues);
     }
     return result.data;
 }

@@ -16,7 +16,9 @@ import cookieParser from 'cookie-parser';
 import winston from 'winston';
 import { serverConfig, securityConfig, validateConfig } from './config';
 import { isAppError } from './lib/errors';
+import { requireAuth, requireAdmin } from './middleware/auth.middleware';
 import authRoutes from './routes/auth.routes';
+import clientRoutes from './routes/clients.routes';
 
 // Validate configuration before doing anything else.
 validateConfig();
@@ -100,7 +102,7 @@ export function createApp() {
             status: 'healthy',
             timestamp: new Date().toISOString(),
             environment: serverConfig.env,
-            phase: 'PHASE_1_IDENTITY_CORE',
+            phase: 'PHASE_2_CLIENT_TRUST',
         });
     });
 
@@ -108,10 +110,11 @@ export function createApp() {
         res.status(200).json({
             service: 'OAuth 2.1 + OIDC Authorization Server',
             version: serverConfig.apiVersion,
-            phase: 'Phase 1: Identity Core',
+            phase: 'Phase 2: Client & Trust Modeling',
             features: {
                 authentication: true, // Phase 1 ✅
                 mfa: true, // Phase 1 ✅
+                client_registry: true, // Phase 2 ✅
                 oauth_endpoints: false, // Phase 3+
                 token_issuance: false, // Phase 4+
                 refresh_tokens: false, // Phase 5+
@@ -122,6 +125,8 @@ export function createApp() {
 
     // ---- Feature routes ----
     app.use(`/api/${serverConfig.apiVersion}/auth`, authRoutes);
+    // Client registry is admin-only; guards applied before the router.
+    app.use(`/api/${serverConfig.apiVersion}/clients`, requireAuth, requireAdmin, clientRoutes);
 
     // ---- 404 ----
     app.use((req: Request, res: Response) => {
@@ -160,9 +165,9 @@ const app = createApp();
 if (require.main === module) {
     const server = app.listen(serverConfig.port, () => {
         logger.info(`
-╔════════════════════════════════════════════════════════════════╗
-║  OAuth 2.1 + OIDC Authorization Server — Phase 1: Identity Core ║
-╚════════════════════════════════════════════════════════════════╝
+╔══════════════════════════════════════════════════════════════════════╗
+║  OAuth 2.1 + OIDC Authorization Server — Phase 2: Client & Trust      ║
+╚══════════════════════════════════════════════════════════════════════╝
 
 🚀 Server running on port ${serverConfig.port}
 🌍 Environment: ${serverConfig.env}
@@ -171,6 +176,9 @@ if (require.main === module) {
 📍 Auth endpoints (/api/${serverConfig.apiVersion}/auth):
    POST /register   POST /login   POST /mfa/login
    POST /logout     GET  /me      POST /mfa/enable   POST /mfa/verify
+
+📍 Client registry (/api/${serverConfig.apiVersion}/clients, admin only):
+   POST /   GET /   GET /:clientId   DELETE /:clientId
 
 ✅ Configuration validated   ✅ Security middleware active
     `);

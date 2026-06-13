@@ -22,7 +22,9 @@ beforeAll(async () => {
 });
 
 afterEach(async () => {
-    await query('TRUNCATE users RESTART IDENTITY CASCADE');
+    // Cascades to sessions, mfa_secrets, oauth_clients-owned consents. Seeded oauth_scopes
+    // are intentionally left in place.
+    await query('TRUNCATE users, oauth_clients RESTART IDENTITY CASCADE');
     const redis = await getRedis();
     for (const pattern of REDIS_PATTERNS) {
         const keys = await redis.keys(pattern);
