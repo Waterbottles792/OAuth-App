@@ -13,8 +13,8 @@ import express, { Request, Response, NextFunction } from 'express';
 import helmet from 'helmet';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
-import winston from 'winston';
 import { serverConfig, securityConfig, validateConfig } from './config';
+import { logger } from './lib/logger';
 import { isAppError } from './lib/errors';
 import { requireAuth, requireAdmin } from './middleware/auth.middleware';
 import authRoutes from './routes/auth.routes';
@@ -24,22 +24,8 @@ import oauthRoutes from './routes/oauth.routes';
 // Validate configuration before doing anything else.
 validateConfig();
 
-// ============================================
-// LOGGING
-// ============================================
-export const logger = winston.createLogger({
-    level: 'info',
-    format: winston.format.combine(
-        winston.format.timestamp(),
-        winston.format.errors({ stack: true }),
-        winston.format.json(),
-    ),
-    transports: [
-        new winston.transports.Console({
-            format: winston.format.combine(winston.format.colorize(), winston.format.simple()),
-        }),
-    ],
-});
+// Re-exported for backwards compatibility; the logger now lives in lib/logger.
+export { logger };
 
 // ============================================
 // APP FACTORY
@@ -103,7 +89,7 @@ export function createApp() {
             status: 'healthy',
             timestamp: new Date().toISOString(),
             environment: serverConfig.env,
-            phase: 'PHASE_3_AUTHORIZATION_CODE',
+            phase: 'PHASE_4_TOKEN_SERVICE',
         });
     });
 
@@ -111,13 +97,13 @@ export function createApp() {
         res.status(200).json({
             service: 'OAuth 2.1 + OIDC Authorization Server',
             version: serverConfig.apiVersion,
-            phase: 'Phase 3: Authorization Code Flow',
+            phase: 'Phase 4: Token Service',
             features: {
                 authentication: true, // Phase 1 ✅
                 mfa: true, // Phase 1 ✅
                 client_registry: true, // Phase 2 ✅
-                authorization_endpoint: true, // Phase 3 ✅ (codes only)
-                token_issuance: false, // Phase 4+
+                authorization_endpoint: true, // Phase 3 ✅
+                token_issuance: true, // Phase 4 ✅ (access tokens, RS256)
                 refresh_tokens: false, // Phase 5+
                 openid_connect: false, // Phase 6+
             },
@@ -169,7 +155,7 @@ if (require.main === module) {
     const server = app.listen(serverConfig.port, () => {
         logger.info(`
 ╔══════════════════════════════════════════════════════════════════════╗
-║  OAuth 2.1 + OIDC Authorization Server — Phase 3: Authorization Code  ║
+║  OAuth 2.1 + OIDC Authorization Server — Phase 4: Token Service       ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
 🚀 Server running on port ${serverConfig.port}
@@ -184,7 +170,7 @@ if (require.main === module) {
    POST /   GET /   GET /:clientId   DELETE /:clientId
 
 📍 OAuth (/api/${serverConfig.apiVersion}/oauth):
-   GET /authorize   POST /authorize   (authorization codes — no tokens yet)
+   GET /authorize   POST /authorize   POST /token   (RS256 access tokens)
 
 ✅ Configuration validated   ✅ Security middleware active
     `);

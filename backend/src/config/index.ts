@@ -135,6 +135,26 @@ export const oauthFlowConfig = {
     // Where the authorization endpoint sends an unauthenticated user to log in. The frontend
     // is expected to send the user back to the original /authorize URL afterwards.
     loginUrl: process.env.LOGIN_URL || 'http://localhost:3000/login',
+    // JWT issuer identity (the `iss` claim) — must be stable; resource servers verify it.
+    issuer: process.env.ISSUER_URL || `http://localhost:${serverConfig.port}`,
+    // Default audience (`aud`) for access tokens until resource indicators exist.
+    accessTokenAudience: process.env.ACCESS_TOKEN_AUDIENCE || 'oauth-platform-api',
+} as const;
+
+/**
+ * Signing-key configuration (Phase 4). The encryption secret protects private keys at rest.
+ */
+export const keyConfig = {
+    // LOCKED to asymmetric (SECURITY_DECISIONS #2). RS256 with RSA-2048.
+    signingAlgorithm: 'RS256' as const,
+    rsaModulusLength: 2048,
+    // Used to derive the AES-256-GCM key that encrypts JWT private keys at rest.
+    // Dev fallback only; production startup validation requires a real value.
+    encryptionSecret:
+        process.env.JWT_KEY_ENCRYPTION_SECRET ||
+        (process.env.NODE_ENV === 'production'
+            ? ''
+            : 'dev-only-insecure-key-encryption-secret-change-me'),
 } as const;
 
 /**
@@ -208,6 +228,10 @@ export function validateConfig(): void {
 
         if (!process.env.REDIS_PASSWORD) {
             errors.push('REDIS_PASSWORD is required in production');
+        }
+
+        if (!process.env.JWT_KEY_ENCRYPTION_SECRET || process.env.JWT_KEY_ENCRYPTION_SECRET.length < 32) {
+            errors.push('JWT_KEY_ENCRYPTION_SECRET must be at least 32 characters in production');
         }
     }
 

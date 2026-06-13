@@ -324,7 +324,14 @@ POST /api/v1/oauth/authorize (consent submission)
 
 ## Phase 4: Token Service
 
-**Status**: ⏳ Not Started
+**Status**: ✅ Completed (2026-06-13)
+
+> Implemented: migration 004 (`jwt_keys`, private key AES-256-GCM encrypted at rest),
+> key.service (RSA-2048 generation + encrypted storage + active-key cache), token.service
+> (`signAccessToken`/`verifyAccessToken` via `jose`, RS256 pinned), and `POST /oauth/token`
+> (authorization_code grant: client auth, redirect match, PKCE verifier check, single-use code
+> consumption → RS256 JWT, 15-min, `Cache-Control: no-store`). 69 tests passing. See
+> `PLAN.md` → Phase 4 Handoff Notes for the Phase 5/6 seams.
 
 ### Purpose
 Issue short-lived access tokens.
@@ -375,13 +382,13 @@ POST /api/v1/oauth/token
 - ❌ UserInfo endpoint (Phase 6)
 
 ### Security Checklist
-- [ ] Private keys never in version control
-- [ ] Private keys encrypted at rest
-- [ ] RS256 or ES256 only
-- [ ] Access token lifetime ≤ 15 minutes
-- [ ] Code verifier validated (PKCE)
-- [ ] Authorization code invalidated after use
-- [ ] Claims validated: iss, aud, exp, iat
+- [x] Private keys never in version control (stored encrypted in DB, never on disk)
+- [x] Private keys encrypted at rest (AES-256-GCM)
+- [x] RS256 or ES256 only (RS256; HS256/none structurally rejected via jose alg pinning)
+- [x] Access token lifetime ≤ 15 minutes (900s)
+- [x] Code verifier validated (PKCE S256)
+- [x] Authorization code invalidated after use (atomic single-use consume)
+- [x] Claims validated: iss, aud, exp, iat
 
 ---
 

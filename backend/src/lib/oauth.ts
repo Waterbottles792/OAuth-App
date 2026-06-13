@@ -6,7 +6,9 @@
  * exact match between a request's redirect_uri and the client's registered set.
  */
 
+import crypto from 'crypto';
 import { ValidationError } from './errors';
+import { safeEqual } from './crypto';
 
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -59,4 +61,14 @@ export function scopesNotAllowed(requested: string[], allowed: string[]): string
 export function parseScopes(scope: string | undefined): string[] {
     if (!scope) return [];
     return [...new Set(scope.trim().split(/\s+/).filter(Boolean))];
+}
+
+/**
+ * PKCE S256 verification: the code_verifier hashes (SHA-256, base64url) to the stored
+ * code_challenge. Constant-time comparison. (RFC 7636 §4.6.)
+ */
+export function verifyPkceS256(codeVerifier: string, codeChallenge: string): boolean {
+    if (!codeVerifier || !codeChallenge) return false;
+    const computed = crypto.createHash('sha256').update(codeVerifier).digest('base64url');
+    return safeEqual(computed, codeChallenge);
 }

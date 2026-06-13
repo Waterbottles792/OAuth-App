@@ -20,10 +20,13 @@ import {
     redirectUriMatches,
     scopesNotAllowed,
     parseScopes,
+    verifyPkceS256,
 } from '../lib/oauth';
-import { getClientByClientId, ClientRecord } from '../services/client.service';
+import { getClientByClientId, verifyClientSecret, ClientRecord } from '../services/client.service';
 import { hasConsentFor, recordConsent } from '../services/consent.service';
-import { issueCode } from '../services/authcode.service';
+import { issueCode, consumeCode } from '../services/authcode.service';
+import { signAccessToken } from '../services/token.service';
+import { logger } from '../lib/logger';
 
 const router = Router();
 
@@ -237,6 +240,95 @@ router.post(
             codeChallenge: v.codeChallenge,
         });
         res.redirect(buildRedirect(v.redirectUri, { code, state: v.state }));
+    }),
+);
+
+// ---------------------------------------------------------------------------
+// Token endpoint (Phase 4) — back-channel. JSON error responses (RFC 6749 §5.2),
+// NOT redirects. Exchanges an authorization code (+ PKCE verifier) for an access token.
+// ---------------------------------------------------------------------------
+
+function tokenError(res: Response, status: number, error: string, description: string): void {
+    res.status(status)
+        .set('Cache-Control', 'no-store')
+        .set('Pragma', 'no-cache')
+        .json({ error, error_description: description });
+}
+
+router.post(
+    '/token',
+    h(async (req, res) => {
+        const b = req.body as Record<string, string | undefined>;
+        const grantType = b.grant_type;
+        const clientId = b.client_id;
+        const clientSecret = b.client_secret;
+        const code = b.code;
+        const redirectUri = b.redirect_uri;
+        const codeVerifier = b.code_verifier;
+
+        // Only the authorization_code grant exists yet (refresh_token is Phase 5).
+        if (grantType !== 'authorization_code') {
+            return tokenError(res, 400, 'unsupported_grant_type', 'Only authorization_code is supported');
+        }
+        if (!clientId) {
+            return tokenError(res, 400, 'invalid_request', 'client_id is required');
+        }
+
+        const client = await getClientByClientId(clientId);
+        if (!client) {
+            return tokenError(res, 401, 'invalid_client', 'Unknown client');
+        }
+
+        // Client authentication: confidential clients must present a valid secret.
+        if (client.client_type === 'confidential') {
+            if (!clientSecret || !(await verifyClientSecret(clientId, clientSecret))) {
+                return tokenError(res, 401, 'invalid_client', 'Client authentication failed');
+            }
+        }
+
+        if (!code || !redirectUri || !codeVerifier) {
+            return tokenError(res, 400, 'invalid_request', 'code, redirect_uri and code_verifier are required');
+        }
+
+        // Single-use consumption: the code is burned here, even if a later check fails.
+        const consumed = await consumeCode(code);
+        if (!consumed.ok || !consumed.record) {
+            if (consumed.reason === 'already_used') {
+                // Possible replay/theft — Phase 5 will revoke tokens issued from this code.
+                logger.warn({ event: 'authz_code_reuse', clientId });
+            }
+            return tokenError(res, 400, 'invalid_grant', 'Authorization code is invalid, expired, or already used');
+        }
+        const record = consumed.record;
+
+        // The code must have been issued to THIS client and THIS redirect_uri.
+        if (record.client_id !== client.id) {
+            return tokenError(res, 400, 'invalid_grant', 'Authorization code was issued to a different client');
+        }
+        if (record.redirect_uri !== redirectUri) {
+            return tokenError(res, 400, 'invalid_grant', 'redirect_uri does not match the authorization request');
+        }
+
+        // PKCE: the verifier must hash to the stored challenge.
+        if (!verifyPkceS256(codeVerifier, record.code_challenge)) {
+            return tokenError(res, 400, 'invalid_grant', 'PKCE verification failed');
+        }
+
+        const token = await signAccessToken({
+            userId: record.user_id,
+            clientId: client.client_id,
+            scopes: record.scopes,
+        });
+
+        res.status(200)
+            .set('Cache-Control', 'no-store')
+            .set('Pragma', 'no-cache')
+            .json({
+                access_token: token.accessToken,
+                token_type: token.tokenType,
+                expires_in: token.expiresIn,
+                scope: token.scope,
+            });
     }),
 );
 

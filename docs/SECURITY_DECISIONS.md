@@ -355,11 +355,11 @@ if (!isAuthorized) {
 - [x] Authorization code short-lived (10 minutes max)
 - [x] Authorization code bound to client_id + redirect_uri + PKCE
 
-### Phase 4: Access Tokens
-- [ ] JWT signed with RS256/ES256
-- [ ] Access token lifetime ≤ 15 minutes
-- [ ] Token claims validated (iss, aud, exp, iat)
-- [ ] Private keys stored securely (never in version control)
+### Phase 4: Access Tokens ✅ (2026-06-13)
+- [x] JWT signed with RS256/ES256 (RS256; alg pinned on verify)
+- [x] Access token lifetime ≤ 15 minutes
+- [x] Token claims validated (iss, aud, exp, iat)
+- [x] Private keys stored securely (AES-256-GCM encrypted; never in version control)
 
 ### Phase 5: Refresh Tokens
 - [ ] Refresh tokens rotate on use

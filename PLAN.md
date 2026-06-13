@@ -80,7 +80,7 @@ makes it survivable across context resets.
 | 1 | Identity Core (+ project infra: DB layer, migrations, tests, validation) | ✅ Complete | 2026-06-13 |
 | 2 | Client & Trust Modeling | ✅ Complete | 2026-06-13 |
 | 3 | Authorization Code Flow (PKCE) | ✅ Complete | 2026-06-13 |
-| 4 | Token Service (JWT issuance) | ⏳ Not started | — |
+| 4 | Token Service (JWT issuance) | ✅ Complete | 2026-06-13 |
 | 5 | Refresh Tokens & Revocation | ⏳ Not started | — |
 | 6 | OpenID Connect | ⏳ Not started | — |
 | 7 | Frontend & UX | ⏳ Not started | — |
@@ -421,13 +421,52 @@ consent records. **Still no `/authorize`, no codes, no tokens.**
 - [ ] **No** refresh tokens, ID tokens, or userinfo.
 
 ### Definition of Done
-- [ ] Acceptance criteria pass; Phase 4 checklist in PHASE_GUIDE ticked.
-- [ ] Update Current Status + Handoff Notes. Commit `feat: Phase 4 - Token Service`.
+- [x] Acceptance criteria pass; Phase 4 checklist in PHASE_GUIDE ticked. **69/69 tests pass.**
+- [x] Update Current Status + Handoff Notes. Commit `feat: Phase 4 - Token Service`.
 
-### Handoff Notes
-- _Algorithm chosen (RS256/ES256) & key-encryption approach:_ …
-- _Current signing `kid`:_ …
-- _Anything Phase 5/6 needs (esp. how to add a `refresh_token` grant later):_ …
+### Handoff Notes (filled in 2026-06-13)
+- **JWT library:** `jose` (not `jsonwebtoken`). Chosen because verification **pins the
+  algorithm** (`algorithms: ['RS256']`), so HS256/`alg:none` are structurally unacceptable,
+  and it exports JWK/JWKS natively (helps Phase 6).
+- **Algorithm:** RS256, RSA-2048 (`keyConfig` / `oauthConfig.tokens`). LOCKED asymmetric.
+- **Key management (`key.service.ts`):** on first use it generates an RSA keypair and stores
+  it in `jwt_keys` (migration 004). **Public key is plaintext** (it's public; JWKS in Phase 6);
+  **private key is AES-256-GCM encrypted at rest** (`iv.tag.ciphertext` base64), AES key
+  derived via scrypt from `keyConfig.encryptionSecret` (env `JWT_KEY_ENCRYPTION_SECRET`,
+  dev fallback in config, **required ≥32 chars in production** by `validateConfig`). The
+  decrypted key is cached in-process (`clearKeyCache()` resets it — used by tests/rotation).
+  A partial unique index enforces exactly one `active` key (rotation is Phase 8). No key
+  material ever touches the filesystem or VCS.
+- **`token.service.ts`:** `signAccessToken({userId, clientId, scopes})` → JWT with header
+  `{alg:RS256, kid, typ:'at+jwt'}`, claims `iss/sub/aud/iat/exp/scope/client_id`,
+  `exp = iat + oauthConfig.tokens.accessTokenLifetime` (900s, never hardcoded).
+  `verifyAccessToken(token)` resolves the public key by the header `kid`, pins RS256, and
+  checks `iss`/`aud`. `iss = oauthFlowConfig.issuer` (`http://localhost:3001`, env `ISSUER_URL`);
+  `aud = oauthFlowConfig.accessTokenAudience` (`oauth-platform-api`, env `ACCESS_TOKEN_AUDIENCE`).
+- **`POST /api/v1/oauth/token`** (in `routes/oauth.routes.ts`): back-channel, JSON errors
+  (RFC 6749 §5.2, `Cache-Control: no-store`). `grant_type=authorization_code` only
+  (`refresh_token` → `unsupported_grant_type`, that's Phase 5). Steps: validate grant_type →
+  look up client (`invalid_client` 401 if unknown) → **confidential clients must present a
+  valid `client_secret`** (`verifyClientSecret`) → `consumeCode` (atomic single-use; the code
+  is burned even if a later check fails) → code's `client_id` must match this client → code's
+  `redirect_uri` must match the param → **PKCE `verifyPkceS256(verifier, stored_challenge)`** →
+  `signAccessToken`. Reuse of a used code logs `event: authz_code_reuse` (Phase 5 will revoke).
+- **New shared helper:** `lib/oauth.ts` → `verifyPkceS256(verifier, challenge)` (constant-time).
+- **Refactor:** the winston `logger` moved to `lib/logger.ts` (server.ts re-exports it) to
+  avoid a circular import now that routes log. Import `logger` from `../lib/logger`.
+- **Current signing kid:** generated lazily per-environment (e.g. dev showed `key_0TM3II3KpUY`);
+  not fixed — read it from `jwt_keys` / the token header.
+- **Anything Phase 5/6 needs:**
+  - **Phase 5 (refresh tokens):** add a `refresh_token` branch to the **same** `/token`
+    handler (the `unsupported_grant_type` guard is the seam). At code-exchange time, also mint
+    + store a refresh token (rotating, single-use, family id) — see `oauthConfig.refreshTokens`.
+    Wire reuse-detection to the `authz_code_reuse` log hook + revoke the token family.
+    Add migration `005_refresh_tokens.sql`. Add a `/revoke` endpoint.
+  - **Phase 6 (OIDC):** publish JWKS from `jwt_keys.public_key` (jose `exportJWK` /
+    `createPublicKey`); mint ID tokens with the **same** `key.service` + `token.service`
+    signing path (add an `id_token` issuer); add `/userinfo` (verify access token with
+    `verifyAccessToken`, return scope-gated claims), `/.well-known/openid-configuration`,
+    `/.well-known/jwks.json`. Thread `nonce` from `/authorize` through the code into the ID token.
 
 ---
 
