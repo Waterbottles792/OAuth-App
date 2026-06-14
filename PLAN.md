@@ -82,7 +82,7 @@ makes it survivable across context resets.
 | 3 | Authorization Code Flow (PKCE) | ✅ Complete | 2026-06-13 |
 | 4 | Token Service (JWT issuance) | ✅ Complete | 2026-06-13 |
 | 5 | Refresh Tokens & Revocation | ✅ Complete | 2026-06-14 |
-| 6 | OpenID Connect | ⏳ Not started | — |
+| 6 | OpenID Connect | ✅ Complete | 2026-06-14 |
 | 7 | Frontend & UX | ⏳ Not started | — |
 | 8 | Hardening & Operations | ⏳ Not started | — |
 
@@ -575,7 +575,7 @@ A security review of Phases 0–5 produced these fixes (commit after the Phase 5
 
 **Goal:** Layer identity on top of OAuth: ID tokens, `/userinfo`, discovery, JWKS.
 
-**Status:** ⏳ Not started
+**Status:** ✅ Completed (2026-06-14)
 
 ### Prerequisites
 - Phase 5 done (or at minimum Phase 4): access tokens + key management exist.
@@ -594,19 +594,43 @@ A security review of Phases 0–5 produced these fixes (commit after the Phase 5
 5. `GET /.well-known/jwks.json` — public keys (kty/use/kid/n/e), **no auth**.
 
 ### Acceptance criteria
-- [ ] `openid` scope yields a signed ID token containing the request's `nonce`.
-- [ ] `/userinfo` rejects missing/invalid tokens; returns only scope-permitted claims.
-- [ ] JWKS serves the current public key(s); discovery doc validates against an OIDC validator.
-- [ ] ID token signature verifies via the JWKS endpoint.
-- [ ] Tests cover nonce passthrough, userinfo auth, JWKS/discovery correctness.
+- [x] `openid` scope yields a signed ID token containing the request's `nonce`.
+- [x] `/userinfo` rejects missing/invalid tokens; returns only scope-permitted claims.
+- [x] JWKS serves the current public key(s); discovery doc exposes the required metadata.
+- [x] ID token signature verifies via the JWKS endpoint.
+- [x] Tests cover nonce passthrough, userinfo auth, JWKS/discovery correctness.
 
 ### Definition of Done
-- [ ] Acceptance criteria pass; Phase 6 checklist in PHASE_GUIDE ticked.
-- [ ] Update Current Status + Handoff Notes. Commit `feat: Phase 6 - OpenID Connect`.
+- [x] Acceptance criteria pass; Phase 6 checklist in PHASE_GUIDE ticked. **92/92 tests pass.**
+- [x] Update Current Status + Handoff Notes. Commit `feat: Phase 6 - OpenID Connect`.
 
-### Handoff Notes
-- _`iss` value used; claim-to-scope mapping:_ …
-- _Anything Phase 7 needs (endpoints to call):_ …
+### Handoff Notes (filled in 2026-06-14)
+- **`iss`:** `oauthFlowConfig.issuer` (`http://localhost:3001`, env `ISSUER_URL`) — used verbatim
+  in access tokens, ID tokens, and the discovery `issuer`. Discovery is mounted at the **root**
+  (`routes/wellknown.routes.ts`, `app.use('/', ...)`), NOT under `/api/v1`, per OIDC Discovery.
+- **ID token vs access token:** both signed by the SAME `key.service`/`token.service` RS256 path.
+  Differences: ID token `aud` = the public `client_id` and `typ` = `JWT` (access token `aud` =
+  `oauth-platform-api`, `typ` = `at+jwt`). ID token lifetime = `oauthConfig.tokens.idTokenLifetime`
+  (3600s). Minted in `issueTokenResponse` whenever `scope` includes `openid` — for BOTH the
+  authorization_code and refresh_token grants. `nonce` is only embedded on the code-exchange ID
+  token (it's threaded auth-request → `authorization_codes.nonce` (migration 007) → ID token);
+  refresh-issued ID tokens carry no nonce (the original is single-use with the code).
+- **Claim-to-scope mapping (`lib/oidc.ts` `buildIdentityClaims`):** `sub` is ALWAYS returned (added
+  by callers, = user id). `email` scope → `email` + `email_verified`. `profile` → nothing yet (no
+  profile columns exist — extend the `profile` branch when they're added). The SAME function feeds
+  the ID token and `/userinfo`, so they can't drift.
+- **JWKS (`key.service.getPublicJwks`):** exports the public half of EVERY row in `jwt_keys` (not
+  just the active one, so a key rotating out still verifies), via jose `importSPKI`→`exportJWK`;
+  adds `kid`/`use:sig`/`alg`. Ensures the first key exists before serving. `/.well-known/jwks.json`
+  sets `Cache-Control: public, max-age=300`.
+- **`/userinfo`:** `GET /api/v1/oauth/userinfo`, Bearer access token; `verifyAccessToken` pins
+  RS256 + iss + aud, then returns `{ sub, ...scope-gated claims }`. RFC 6750 errors via
+  `WWW-Authenticate` (401 `invalid_request` for no token, `invalid_token` for bad/expired/unknown).
+- **Anything Phase 7 (frontend) needs — endpoints to call:** discovery `GET
+  /.well-known/openid-configuration` lists them all. Login `POST /api/v1/auth/login` (+ `mfa/login`),
+  authorize `GET/POST /api/v1/oauth/authorize` (GET returns a `consent_required` JSON the consent UI
+  renders, then POSTs back the same params + `approved`), token `POST /api/v1/oauth/token`, userinfo,
+  revoke. Tokens are JSON in the back-channel; the browser session is the `sid` HttpOnly cookie.
 
 ---
 

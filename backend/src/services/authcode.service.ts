@@ -21,6 +21,7 @@ export interface IssueCodeInput {
     redirectUri: string;
     scopes: string[];
     codeChallenge: string;
+    nonce?: string; // OIDC: echoed into the ID token (Phase 6)
 }
 
 export interface AuthorizationCodeRecord {
@@ -31,6 +32,7 @@ export interface AuthorizationCodeRecord {
     scopes: string[];
     code_challenge: string;
     code_challenge_method: string;
+    nonce: string | null;
     used: boolean;
     expires_at: Date;
     created_at: Date;
@@ -44,8 +46,8 @@ export async function issueCode(input: IssueCodeInput): Promise<string> {
 
     await query(
         `INSERT INTO authorization_codes
-           (code_hash, client_id, user_id, redirect_uri, scopes, code_challenge, code_challenge_method, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'S256', NOW() + ($7 || ' seconds')::interval)`,
+           (code_hash, client_id, user_id, redirect_uri, scopes, code_challenge, code_challenge_method, nonce, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'S256', $7, NOW() + ($8 || ' seconds')::interval)`,
         [
             codeHash,
             input.clientDbId,
@@ -53,6 +55,7 @@ export async function issueCode(input: IssueCodeInput): Promise<string> {
             input.redirectUri,
             input.scopes,
             input.codeChallenge,
+            input.nonce ?? null,
             String(ttl),
         ],
     );
@@ -82,7 +85,7 @@ export async function consumeCode(rawCode: string): Promise<ConsumeResult> {
             SET used = TRUE
           WHERE code_hash = $1 AND used = FALSE AND expires_at > NOW()
         RETURNING code_hash, client_id, user_id, redirect_uri, scopes,
-                  code_challenge, code_challenge_method, used, expires_at, created_at`,
+                  code_challenge, code_challenge_method, nonce, used, expires_at, created_at`,
         [codeHash],
     );
 

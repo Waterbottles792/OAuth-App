@@ -20,6 +20,7 @@ import { requireAuth, requireAdmin } from './middleware/auth.middleware';
 import authRoutes from './routes/auth.routes';
 import clientRoutes from './routes/clients.routes';
 import oauthRoutes from './routes/oauth.routes';
+import wellKnownRoutes from './routes/wellknown.routes';
 
 // Validate configuration before doing anything else.
 validateConfig();
@@ -90,7 +91,7 @@ export function createApp() {
             status: 'healthy',
             timestamp: new Date().toISOString(),
             environment: serverConfig.env,
-            phase: 'PHASE_4_TOKEN_SERVICE',
+            phase: 'PHASE_6_OPENID_CONNECT',
         });
     });
 
@@ -98,18 +99,21 @@ export function createApp() {
         res.status(200).json({
             service: 'OAuth 2.1 + OIDC Authorization Server',
             version: serverConfig.apiVersion,
-            phase: 'Phase 4: Token Service',
+            phase: 'Phase 6: OpenID Connect',
             features: {
                 authentication: true, // Phase 1 ✅
                 mfa: true, // Phase 1 ✅
                 client_registry: true, // Phase 2 ✅
                 authorization_endpoint: true, // Phase 3 ✅
                 token_issuance: true, // Phase 4 ✅ (access tokens, RS256)
-                refresh_tokens: false, // Phase 5+
-                openid_connect: false, // Phase 6+
+                refresh_tokens: true, // Phase 5 ✅ (rotating, reuse detection)
+                openid_connect: true, // Phase 6 ✅ (ID token, userinfo, discovery, JWKS)
             },
         });
     });
+
+    // ---- OIDC discovery (root, public, no /api prefix) ----
+    app.use('/', wellKnownRoutes);
 
     // ---- Feature routes ----
     app.use(`/api/${serverConfig.apiVersion}/auth`, authRoutes);
@@ -156,7 +160,7 @@ if (require.main === module) {
     const server = app.listen(serverConfig.port, () => {
         logger.info(`
 ╔══════════════════════════════════════════════════════════════════════╗
-║  OAuth 2.1 + OIDC Authorization Server — Phase 4: Token Service       ║
+║  OAuth 2.1 + OIDC Authorization Server — Phase 6: OpenID Connect      ║
 ╚══════════════════════════════════════════════════════════════════════╝
 
 🚀 Server running on port ${serverConfig.port}
@@ -171,7 +175,10 @@ if (require.main === module) {
    POST /   GET /   GET /:clientId   DELETE /:clientId
 
 📍 OAuth (/api/${serverConfig.apiVersion}/oauth):
-   GET /authorize   POST /authorize   POST /token   (RS256 access tokens)
+   GET /authorize   POST /authorize   POST /token   POST /revoke   GET /userinfo
+
+📍 OIDC discovery (public, root):
+   GET /.well-known/openid-configuration   GET /.well-known/jwks.json
 
 ✅ Configuration validated   ✅ Security middleware active
     `);

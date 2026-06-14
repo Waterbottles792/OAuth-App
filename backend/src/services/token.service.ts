@@ -17,6 +17,7 @@ import { getActiveSigningKey, getPublicKeyPem } from './key.service';
 
 const ALG = oauthConfig.tokens.algorithm; // 'RS256' (LOCKED)
 const LIFETIME = oauthConfig.tokens.accessTokenLifetime; // 900s (LOCKED)
+const ID_LIFETIME = oauthConfig.tokens.idTokenLifetime; // OIDC ID token lifetime (Phase 6)
 
 export interface AccessTokenInput {
     userId: string; // -> sub
@@ -49,6 +50,36 @@ export async function signAccessToken(input: AccessTokenInput): Promise<IssuedTo
         .sign(privateKey);
 
     return { accessToken, tokenType: 'Bearer', expiresIn: LIFETIME, scope };
+}
+
+export interface IdTokenInput {
+    userId: string; // -> sub
+    clientId: string; // public client_id -> aud (OIDC: the ID token's audience IS the client)
+    nonce?: string | null; // replay protection — echoed verbatim from the auth request
+    claims?: Record<string, unknown>; // scope-gated identity claims (email, ...)
+}
+
+/**
+ * Mint a signed OIDC ID token. Signed with the SAME key/alg as access tokens (one signing
+ * path), but `aud` is the client_id and `typ` is plain JWT. The nonce, when present, is
+ * embedded so the client can detect replay.
+ */
+export async function signIdToken(input: IdTokenInput): Promise<string> {
+    const key = await getActiveSigningKey();
+    const privateKey = await importPKCS8(key.privateKeyPem, ALG);
+
+    const nowSec = Math.floor(Date.now() / 1000);
+    const payload: Record<string, unknown> = { ...(input.claims ?? {}) };
+    if (input.nonce) payload.nonce = input.nonce;
+
+    return new SignJWT(payload)
+        .setProtectedHeader({ alg: ALG, kid: key.kid, typ: 'JWT' })
+        .setIssuer(oauthFlowConfig.issuer)
+        .setSubject(input.userId)
+        .setAudience(input.clientId)
+        .setIssuedAt(nowSec)
+        .setExpirationTime(nowSec + ID_LIFETIME)
+        .sign(privateKey);
 }
 
 /**

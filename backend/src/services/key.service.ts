@@ -12,6 +12,7 @@
  */
 
 import crypto from 'crypto';
+import { importSPKI, exportJWK, JWK } from 'jose';
 import { query } from '../db/pool';
 import { keyConfig } from '../config';
 import { randomToken } from '../lib/crypto';
@@ -119,6 +120,30 @@ export async function getPublicKeyPem(kid: string): Promise<string | null> {
         [kid],
     );
     return rows[0]?.public_key ?? null;
+}
+
+/**
+ * Public JWK Set for the JWKS endpoint (Phase 6). Exports the public half of every key in
+ * `jwt_keys` (not just the active one, so tokens signed by a key being rotated out still
+ * verify). Ensures at least one key exists first. Only public parameters (kty/n/e) plus
+ * kid/use/alg are exposed — never any private material.
+ */
+export async function getPublicJwks(): Promise<{ keys: JWK[] }> {
+    await getActiveSigningKey(); // generate the first key on demand if none exists yet
+
+    const { rows } = await query<{ kid: string; algorithm: string; public_key: string }>(
+        'SELECT kid, algorithm, public_key FROM jwt_keys ORDER BY active DESC, created_at DESC',
+    );
+
+    const keys = await Promise.all(
+        rows.map(async (r) => {
+            const key = await importSPKI(r.public_key, r.algorithm);
+            const jwk = await exportJWK(key); // public params only (kty, n, e)
+            return { ...jwk, kid: r.kid, use: 'sig', alg: r.algorithm };
+        }),
+    );
+
+    return { keys };
 }
 
 /** Test/rotation helper: drop the in-memory cache so the next call reloads from the DB. */

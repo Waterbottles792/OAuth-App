@@ -470,7 +470,15 @@ function rotateRefreshToken(oldToken: string) {
 
 ## Phase 6: OpenID Connect
 
-**Status**: ⏳ Not Started
+**Status**: ✅ Completed (2026-06-14)
+
+> Implemented: migration 007 (`nonce` on `authorization_codes`), `signIdToken` (same key/alg as
+> access tokens, `aud`=client_id, `typ`=JWT, nonce embedded), `lib/oidc.ts` scope→claims map
+> shared by ID token and userinfo, `key.service.getPublicJwks` (jose `exportJWK`), and the
+> endpoints: ID token minted at `/token` for the `openid` scope (code + refresh), `GET
+> /oauth/userinfo` (Bearer access token → `sub` + scope-gated claims), and the root-mounted
+> `GET /.well-known/openid-configuration` + `GET /.well-known/jwks.json`. 92 tests passing.
+> See `PLAN.md` → Phase 6 Handoff Notes.
 
 ### Purpose
 Turn OAuth into an identity provider.
@@ -509,11 +517,11 @@ GET /.well-known/jwks.json
 ```
 
 ### Security Checklist
-- [ ] Nonce validated (replay protection)
-- [ ] ID token signed same as access token
-- [ ] UserInfo requires valid access token
-- [ ] JWKS endpoint public (no authentication)
-- [ ] Claims released based on scope
+- [x] Nonce carried (auth request → hashed single-use code → ID token) for client-side replay detection
+- [x] ID token signed same as access token (same `key.service`/`token.service` RS256 path)
+- [x] UserInfo requires valid access token (Bearer; `verifyAccessToken` pins RS256/iss/aud)
+- [x] JWKS endpoint public (no authentication); exposes public params only (no `d`/`p`/`q`)
+- [x] Claims released based on scope (`lib/oidc.ts` map, shared by ID token + userinfo; `sub` always)
 
 ---
 

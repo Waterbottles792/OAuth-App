@@ -214,6 +214,7 @@ export const oauthConfig = {
         format: 'JWT' as const, // LOCKED: JWT format only
         algorithm: 'RS256' as const, // LOCKED: Asymmetric signing (RS256 or ES256)
         accessTokenLifetime: 900, // LOCKED: 15 minutes maximum (in seconds)
+        idTokenLifetime: 3600, // OIDC ID token lifetime (Phase 6), 1 hour
     },
 
     // Flow configuration (Phase 3+)

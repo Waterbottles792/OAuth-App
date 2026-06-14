@@ -26,12 +26,14 @@ import {
 import { getClientByClientId, verifyClientSecret, ClientRecord } from '../services/client.service';
 import { hasConsentFor, recordConsent } from '../services/consent.service';
 import { issueCode, consumeCode } from '../services/authcode.service';
-import { signAccessToken } from '../services/token.service';
+import { signAccessToken, signIdToken, verifyAccessToken } from '../services/token.service';
 import {
     issueRefreshToken,
     rotateRefreshToken,
     revokeRefreshToken,
 } from '../services/refreshtoken.service';
+import { getUserById } from '../services/auth.service';
+import { buildIdentityClaims } from '../lib/oidc';
 import { logger } from '../lib/logger';
 
 const router = Router();
@@ -49,6 +51,7 @@ interface RawParams {
     state?: string;
     codeChallenge?: string;
     codeChallengeMethod?: string;
+    nonce?: string;
 }
 
 type Validation =
@@ -63,6 +66,7 @@ type Validation =
           scopes: string[];
           codeChallenge: string;
           state?: string;
+          nonce?: string;
       };
 
 /** Build a redirect URL, merging params into the (possibly already query-bearing) base. */
@@ -125,7 +129,15 @@ async function validateAuthorizeRequest(p: RawParams): Promise<Validation> {
         return redirectError('invalid_request', 'code_challenge_method must be S256');
     }
 
-    return { kind: 'ok', client, redirectUri: p.redirectUri, scopes, codeChallenge: p.codeChallenge, state: p.state };
+    return {
+        kind: 'ok',
+        client,
+        redirectUri: p.redirectUri,
+        scopes,
+        codeChallenge: p.codeChallenge,
+        state: p.state,
+        nonce: p.nonce,
+    };
 }
 
 function paramsFromQuery(req: Request): RawParams {
@@ -138,6 +150,7 @@ function paramsFromQuery(req: Request): RawParams {
         state: q.state,
         codeChallenge: q.code_challenge,
         codeChallengeMethod: q.code_challenge_method,
+        nonce: q.nonce,
     };
 }
 
@@ -151,6 +164,7 @@ function paramsFromBody(req: Request): RawParams {
         state: b.state,
         codeChallenge: b.code_challenge,
         codeChallengeMethod: b.code_challenge_method,
+        nonce: b.nonce,
     };
 }
 
@@ -193,6 +207,7 @@ router.get(
                 redirectUri: v.redirectUri,
                 scopes: v.scopes,
                 codeChallenge: v.codeChallenge,
+                nonce: v.nonce,
             });
             res.redirect(buildRedirect(v.redirectUri, { code, state: v.state }));
             return;
@@ -211,6 +226,7 @@ router.get(
                 state: v.state,
                 code_challenge: v.codeChallenge,
                 code_challenge_method: 'S256',
+                nonce: v.nonce,
             },
         });
     }),
@@ -244,6 +260,7 @@ router.post(
             redirectUri: v.redirectUri,
             scopes: v.scopes,
             codeChallenge: v.codeChallenge,
+            nonce: v.nonce,
         });
         res.redirect(buildRedirect(v.redirectUri, { code, state: v.state }));
     }),
@@ -301,6 +318,7 @@ async function issueTokenResponse(
     userId: string,
     scopes: string[],
     refresh: { family: { familyId: string; parentTokenHash: string; familyExpiresAt: Date } | null } | null,
+    nonce: string | null = null,
 ): Promise<void> {
     const access = await signAccessToken({ userId, clientId: client.client_id, scopes });
 
@@ -310,6 +328,19 @@ async function issueTokenResponse(
         expires_in: access.expiresIn,
         scope: access.scope,
     };
+
+    // OIDC: an `openid` scope yields an ID token signed with the same key as the access token.
+    if (scopes.includes('openid')) {
+        const user = await getUserById(userId);
+        if (user) {
+            body.id_token = await signIdToken({
+                userId,
+                clientId: client.client_id,
+                nonce,
+                claims: buildIdentityClaims(user, scopes),
+            });
+        }
+    }
 
     if (refresh) {
         const issued = await issueRefreshToken({
@@ -362,7 +393,14 @@ async function handleAuthorizationCodeGrant(
 
     // Only mint a refresh token (a new family) if this client is allowed the refresh_token grant.
     const wantsRefresh = client.allowed_grant_types.includes('refresh_token');
-    await issueTokenResponse(res, client, record.user_id, record.scopes, wantsRefresh ? { family: null } : null);
+    await issueTokenResponse(
+        res,
+        client,
+        record.user_id,
+        record.scopes,
+        wantsRefresh ? { family: null } : null,
+        record.nonce, // OIDC nonce -> ID token
+    );
 }
 
 async function handleRefreshTokenGrant(
@@ -451,6 +489,57 @@ router.post(
         }
 
         res.status(200).set('Cache-Control', 'no-store').set('Pragma', 'no-cache').json({});
+    }),
+);
+
+// ---------------------------------------------------------------------------
+// UserInfo endpoint (Phase 6, OIDC) — requires a valid Bearer access token. Returns the
+// subject plus the identity claims permitted by the token's scopes. RFC 6750 errors are
+// signalled via the WWW-Authenticate header.
+// ---------------------------------------------------------------------------
+
+function bearerToken(req: Request): string | null {
+    const header = req.get('authorization');
+    if (!header) return null;
+    const [scheme, value] = header.split(' ');
+    if (scheme?.toLowerCase() !== 'bearer' || !value) return null;
+    return value.trim();
+}
+
+router.get(
+    '/userinfo',
+    h(async (req, res) => {
+        const token = bearerToken(req);
+        if (!token) {
+            res.status(401)
+                .set('WWW-Authenticate', 'Bearer error="invalid_request"')
+                .json({ error: 'invalid_request', error_description: 'Missing Bearer access token' });
+            return;
+        }
+
+        let payload;
+        try {
+            payload = await verifyAccessToken(token);
+        } catch {
+            res.status(401)
+                .set('WWW-Authenticate', 'Bearer error="invalid_token"')
+                .json({ error: 'invalid_token', error_description: 'The access token is invalid or expired' });
+            return;
+        }
+
+        const scopes = typeof payload.scope === 'string' ? payload.scope.split(' ') : [];
+        const user = payload.sub ? await getUserById(payload.sub) : null;
+        if (!user) {
+            res.status(401)
+                .set('WWW-Authenticate', 'Bearer error="invalid_token"')
+                .json({ error: 'invalid_token', error_description: 'Unknown subject' });
+            return;
+        }
+
+        // `sub` is always returned; everything else is scope-gated (same map as the ID token).
+        res.status(200)
+            .set('Cache-Control', 'no-store')
+            .json({ sub: user.id, ...buildIdentityClaims(user, scopes) });
     }),
 );
 
