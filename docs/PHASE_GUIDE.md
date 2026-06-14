@@ -394,7 +394,16 @@ POST /api/v1/oauth/token
 
 ## Phase 5: Refresh Tokens & Revocation
 
-**Status**: ⏳ Not Started
+**Status**: ✅ Completed (2026-06-14)
+
+> Implemented: migration 005 (`refresh_tokens`, sha256-hashed PK, `token_family_id` +
+> `parent_token_hash`, `used`/`revoked` flags, 30-day TTL, FK CASCADE), refreshtoken.service
+> (`issueRefreshToken` / atomic single-use `rotateRefreshToken` with reuse detection +
+> `revokeFamily` / `revokeRefreshToken`). `/token` now also mints a rotating refresh token at
+> code exchange and accepts `grant_type=refresh_token` (rotate → new access + child refresh in
+> the same family; replay of a used/revoked token revokes the whole family and logs
+> `refresh_token_reuse`). Added `POST /api/v1/oauth/revoke` (RFC 7009; always 200, client-scoped).
+> 79 tests passing. See `PLAN.md` → Phase 5 Handoff Notes.
 
 ### Database Schema
 ```sql
@@ -447,11 +456,11 @@ function rotateRefreshToken(oldToken: string) {
 ```
 
 ### Security Checklist
-- [ ] Refresh tokens rotate on every use
-- [ ] Refresh token reuse detection
-- [ ] Token family revocation
-- [ ] Refresh tokens hashed in database
-- [ ] Refresh token lifetime: 30 days maximum
+- [x] Refresh tokens rotate on every use (old token marked `used`, child minted in same family)
+- [x] Refresh token reuse detection (atomic single-use claim; replay → family revoked)
+- [x] Token family revocation (`revokeFamily` on reuse, revoked-token replay, and `/revoke`)
+- [x] Refresh tokens hashed in database (sha256; raw token never stored)
+- [x] Refresh token lifetime: 30 days maximum (`oauthConfig.refreshTokens.lifetime`)
 
 ---
 

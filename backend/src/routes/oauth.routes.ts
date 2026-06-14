@@ -27,6 +27,11 @@ import { getClientByClientId, verifyClientSecret, ClientRecord } from '../servic
 import { hasConsentFor, recordConsent } from '../services/consent.service';
 import { issueCode, consumeCode } from '../services/authcode.service';
 import { signAccessToken } from '../services/token.service';
+import {
+    issueRefreshToken,
+    rotateRefreshToken,
+    revokeRefreshToken,
+} from '../services/refreshtoken.service';
 import { logger } from '../lib/logger';
 
 const router = Router();
@@ -245,8 +250,9 @@ router.post(
 );
 
 // ---------------------------------------------------------------------------
-// Token endpoint (Phase 4) — back-channel. JSON error responses (RFC 6749 §5.2),
-// NOT redirects. Exchanges an authorization code (+ PKCE verifier) for an access token.
+// Token endpoint (Phase 4 + Phase 5) — back-channel. JSON error responses (RFC 6749 §5.2),
+// NOT redirects. Supports the authorization_code and refresh_token grants. Successful
+// responses include a rotating, single-use refresh_token (Phase 5).
 // ---------------------------------------------------------------------------
 
 function tokenError(res: Response, status: number, error: string, description: string): void {
@@ -256,81 +262,177 @@ function tokenError(res: Response, status: number, error: string, description: s
         .json({ error, error_description: description });
 }
 
+/**
+ * Authenticate the client for a back-channel request. Confidential clients must present a
+ * valid secret. On failure this writes the error response and returns null.
+ */
+async function authenticateClient(
+    res: Response,
+    clientId: string | undefined,
+    clientSecret: string | undefined,
+): Promise<ClientRecord | null> {
+    if (!clientId) {
+        tokenError(res, 400, 'invalid_request', 'client_id is required');
+        return null;
+    }
+    const client = await getClientByClientId(clientId);
+    if (!client) {
+        tokenError(res, 401, 'invalid_client', 'Unknown client');
+        return null;
+    }
+    if (client.client_type === 'confidential') {
+        if (!clientSecret || !(await verifyClientSecret(clientId, clientSecret))) {
+            tokenError(res, 401, 'invalid_client', 'Client authentication failed');
+            return null;
+        }
+    }
+    return client;
+}
+
+/** Mint an access token + a refresh token and write the RFC 6749 §5.1 success response. */
+async function issueTokenResponse(
+    res: Response,
+    client: ClientRecord,
+    userId: string,
+    scopes: string[],
+    family: { familyId: string; parentTokenHash: string } | null,
+): Promise<void> {
+    const access = await signAccessToken({ userId, clientId: client.client_id, scopes });
+    const refresh = await issueRefreshToken({
+        userId,
+        clientDbId: client.id,
+        scopes,
+        familyId: family?.familyId,
+        parentTokenHash: family?.parentTokenHash,
+    });
+
+    res.status(200)
+        .set('Cache-Control', 'no-store')
+        .set('Pragma', 'no-cache')
+        .json({
+            access_token: access.accessToken,
+            token_type: access.tokenType,
+            expires_in: access.expiresIn,
+            refresh_token: refresh.refreshToken,
+            scope: access.scope,
+        });
+}
+
+async function handleAuthorizationCodeGrant(
+    res: Response,
+    client: ClientRecord,
+    b: Record<string, string | undefined>,
+): Promise<void> {
+    const { code, redirect_uri: redirectUri, code_verifier: codeVerifier } = b;
+
+    if (!code || !redirectUri || !codeVerifier) {
+        return tokenError(res, 400, 'invalid_request', 'code, redirect_uri and code_verifier are required');
+    }
+
+    // Single-use consumption: the code is burned here, even if a later check fails.
+    const consumed = await consumeCode(code);
+    if (!consumed.ok || !consumed.record) {
+        if (consumed.reason === 'already_used') {
+            logger.warn({ event: 'authz_code_reuse', clientId: client.client_id });
+        }
+        return tokenError(res, 400, 'invalid_grant', 'Authorization code is invalid, expired, or already used');
+    }
+    const record = consumed.record;
+
+    // The code must have been issued to THIS client and THIS redirect_uri.
+    if (record.client_id !== client.id) {
+        return tokenError(res, 400, 'invalid_grant', 'Authorization code was issued to a different client');
+    }
+    if (record.redirect_uri !== redirectUri) {
+        return tokenError(res, 400, 'invalid_grant', 'redirect_uri does not match the authorization request');
+    }
+
+    // PKCE: the verifier must hash to the stored challenge.
+    if (!verifyPkceS256(codeVerifier, record.code_challenge)) {
+        return tokenError(res, 400, 'invalid_grant', 'PKCE verification failed');
+    }
+
+    // New refresh-token family begins at code exchange.
+    await issueTokenResponse(res, client, record.user_id, record.scopes, null);
+}
+
+async function handleRefreshTokenGrant(
+    res: Response,
+    client: ClientRecord,
+    b: Record<string, string | undefined>,
+): Promise<void> {
+    const presented = b.refresh_token;
+    if (!presented) {
+        return tokenError(res, 400, 'invalid_request', 'refresh_token is required');
+    }
+
+    const result = await rotateRefreshToken(presented, client.id);
+    if (!result.ok || !result.record) {
+        if (result.reason === 'reused' || result.reason === 'revoked') {
+            // Replay of a rotated/revoked token: the whole family was just revoked.
+            logger.warn({ event: 'refresh_token_reuse', clientId: client.client_id });
+        }
+        return tokenError(res, 400, 'invalid_grant', 'Refresh token is invalid, expired, or has been revoked');
+    }
+    const old = result.record;
+
+    // Rotate: mint a new access token + a child refresh token in the SAME family.
+    await issueTokenResponse(res, client, old.user_id, old.scopes, {
+        familyId: old.token_family_id,
+        parentTokenHash: old.token_hash,
+    });
+}
+
 router.post(
     '/token',
     tokenRateLimit,
     h(async (req, res) => {
         const b = req.body as Record<string, string | undefined>;
-        const grantType = b.grant_type;
-        const clientId = b.client_id;
-        const clientSecret = b.client_secret;
-        const code = b.code;
-        const redirectUri = b.redirect_uri;
-        const codeVerifier = b.code_verifier;
 
-        // Only the authorization_code grant exists yet (refresh_token is Phase 5).
-        if (grantType !== 'authorization_code') {
-            return tokenError(res, 400, 'unsupported_grant_type', 'Only authorization_code is supported');
-        }
-        if (!clientId) {
-            return tokenError(res, 400, 'invalid_request', 'client_id is required');
+        // Validate the grant type before authenticating, so an unsupported grant is reported
+        // as such regardless of client credentials.
+        if (b.grant_type !== 'authorization_code' && b.grant_type !== 'refresh_token') {
+            return tokenError(
+                res,
+                400,
+                'unsupported_grant_type',
+                'Only authorization_code and refresh_token are supported',
+            );
         }
 
-        const client = await getClientByClientId(clientId);
-        if (!client) {
-            return tokenError(res, 401, 'invalid_client', 'Unknown client');
+        const client = await authenticateClient(res, b.client_id, b.client_secret);
+        if (!client) return; // error already written
+
+        if (b.grant_type === 'authorization_code') {
+            return handleAuthorizationCodeGrant(res, client, b);
+        }
+        return handleRefreshTokenGrant(res, client, b);
+    }),
+);
+
+// ---------------------------------------------------------------------------
+// Revocation endpoint (Phase 5) — RFC 7009. Back-channel, client-authenticated. Revokes a
+// refresh token and its whole family. Per the RFC, an invalid/unknown token is NOT an error:
+// the endpoint responds 200 regardless, so clients can't probe token validity here.
+// ---------------------------------------------------------------------------
+
+router.post(
+    '/revoke',
+    tokenRateLimit,
+    h(async (req, res) => {
+        const b = req.body as Record<string, string | undefined>;
+
+        const client = await authenticateClient(res, b.client_id, b.client_secret);
+        if (!client) return; // error already written
+
+        const token = b.token;
+        if (token) {
+            // token_type_hint is advisory; we only manage refresh tokens (access tokens are
+            // stateless JWTs). Unknown/foreign tokens are silently ignored per RFC 7009 §2.2.
+            await revokeRefreshToken(token, client.id);
         }
 
-        // Client authentication: confidential clients must present a valid secret.
-        if (client.client_type === 'confidential') {
-            if (!clientSecret || !(await verifyClientSecret(clientId, clientSecret))) {
-                return tokenError(res, 401, 'invalid_client', 'Client authentication failed');
-            }
-        }
-
-        if (!code || !redirectUri || !codeVerifier) {
-            return tokenError(res, 400, 'invalid_request', 'code, redirect_uri and code_verifier are required');
-        }
-
-        // Single-use consumption: the code is burned here, even if a later check fails.
-        const consumed = await consumeCode(code);
-        if (!consumed.ok || !consumed.record) {
-            if (consumed.reason === 'already_used') {
-                // Possible replay/theft — Phase 5 will revoke tokens issued from this code.
-                logger.warn({ event: 'authz_code_reuse', clientId });
-            }
-            return tokenError(res, 400, 'invalid_grant', 'Authorization code is invalid, expired, or already used');
-        }
-        const record = consumed.record;
-
-        // The code must have been issued to THIS client and THIS redirect_uri.
-        if (record.client_id !== client.id) {
-            return tokenError(res, 400, 'invalid_grant', 'Authorization code was issued to a different client');
-        }
-        if (record.redirect_uri !== redirectUri) {
-            return tokenError(res, 400, 'invalid_grant', 'redirect_uri does not match the authorization request');
-        }
-
-        // PKCE: the verifier must hash to the stored challenge.
-        if (!verifyPkceS256(codeVerifier, record.code_challenge)) {
-            return tokenError(res, 400, 'invalid_grant', 'PKCE verification failed');
-        }
-
-        const token = await signAccessToken({
-            userId: record.user_id,
-            clientId: client.client_id,
-            scopes: record.scopes,
-        });
-
-        res.status(200)
-            .set('Cache-Control', 'no-store')
-            .set('Pragma', 'no-cache')
-            .json({
-                access_token: token.accessToken,
-                token_type: token.tokenType,
-                expires_in: token.expiresIn,
-                scope: token.scope,
-            });
+        res.status(200).set('Cache-Control', 'no-store').set('Pragma', 'no-cache').json({});
     }),
 );
 

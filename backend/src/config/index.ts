@@ -196,6 +196,7 @@ export const oauthConfig = {
     refreshTokens: {
         rotating: true, // LOCKED: Single-use rotating refresh tokens
         reuseDetection: true, // LOCKED: Detect and revoke on reuse
+        lifetime: 30 * 24 * 60 * 60, // LOCKED: 30 days maximum (in seconds)
     },
 } as const;
 

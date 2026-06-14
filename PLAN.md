@@ -81,7 +81,7 @@ makes it survivable across context resets.
 | 2 | Client & Trust Modeling | ✅ Complete | 2026-06-13 |
 | 3 | Authorization Code Flow (PKCE) | ✅ Complete | 2026-06-13 |
 | 4 | Token Service (JWT issuance) | ✅ Complete | 2026-06-13 |
-| 5 | Refresh Tokens & Revocation | ⏳ Not started | — |
+| 5 | Refresh Tokens & Revocation | ✅ Complete | 2026-06-14 |
 | 6 | OpenID Connect | ⏳ Not started | — |
 | 7 | Frontend & UX | ⏳ Not started | — |
 | 8 | Hardening & Operations | ⏳ Not started | — |
@@ -475,7 +475,7 @@ consent records. **Still no `/authorize`, no codes, no tokens.**
 **Goal:** Add rotating, single-use refresh tokens with reuse detection and token-family
 revocation. Add `/revoke`.
 
-**Status:** ⏳ Not started
+**Status:** ✅ Completed (2026-06-14)
 
 ### Prerequisites
 - Phase 4 done: `/token` issues access-token JWTs; key management exists.
@@ -495,18 +495,54 @@ revocation. Add `/revoke`.
 4. `POST /api/v1/oauth/revoke` — revoke a token (and its family where appropriate).
 
 ### Acceptance criteria
-- [ ] Refresh rotates: each use returns a new refresh token; the old one is now invalid.
-- [ ] Presenting an already-used refresh token revokes the entire family.
-- [ ] Refresh tokens are hashed in the DB; 30-day max lifetime enforced.
-- [ ] `/revoke` invalidates tokens; revoked tokens can't mint access tokens.
-- [ ] Tests cover rotation, reuse→family-revocation, expiry, revoke.
+- [x] Refresh rotates: each use returns a new refresh token; the old one is now invalid.
+- [x] Presenting an already-used refresh token revokes the entire family.
+- [x] Refresh tokens are hashed in the DB; 30-day max lifetime enforced.
+- [x] `/revoke` invalidates tokens; revoked tokens can't mint access tokens.
+- [x] Tests cover rotation, reuse→family-revocation, expiry, revoke.
 
 ### Definition of Done
-- [ ] Acceptance criteria pass; Phase 5 checklist in PHASE_GUIDE ticked.
-- [ ] Update Current Status + Handoff Notes. Commit `feat: Phase 5 - Refresh Tokens & Revocation`.
+- [x] Acceptance criteria pass; Phase 5 checklist in PHASE_GUIDE ticked. **79/79 tests pass.**
+- [x] Update Current Status + Handoff Notes. Commit `feat: Phase 5 - Refresh Tokens & Revocation`.
 
-### Handoff Notes
-- _How families are keyed; any Redis blacklist used for access tokens:_ …
+### Handoff Notes (filled in 2026-06-14)
+- **Migration 005 (`refresh_tokens`):** raw token never stored — `token_hash` (sha256 hex) is
+  the PK, mirroring authorization codes. Columns: `user_id`/`client_id` (both FK `ON DELETE
+  CASCADE`, so the test-suite `TRUNCATE users, oauth_clients CASCADE` cleans them up), `scopes`,
+  `token_family_id` (UUID), `parent_token_hash` (NULL at the family root), `used`, `revoked`,
+  30-day `expires_at`. Indexes on `token_family_id` and `expires_at`.
+- **Families are keyed by `token_family_id`.** A new family is created at **code exchange**
+  (`issueRefreshToken` with no `familyId` → DB `gen_random_uuid()`). Every rotation mints a
+  child in the **same** family with `parent_token_hash` = the consumed token's hash. Reuse
+  detection = the whole family is revoked (`UPDATE … SET revoked=TRUE WHERE token_family_id=$1`).
+- **`refreshtoken.service.ts`:**
+  - `issueRefreshToken({userId, clientDbId, scopes, familyId?, parentTokenHash?})` → `{refreshToken, record}`.
+  - `rotateRefreshToken(rawToken, clientDbId)` — **atomic single-use claim** (`UPDATE … SET
+    used=TRUE WHERE token_hash=$1 AND client_id=$2 AND used=FALSE AND revoked=FALSE AND
+    expires_at>NOW() RETURNING *`), so concurrent refreshes can't both win. On miss it diagnoses
+    `reason ∈ not_found|client_mismatch|revoked|reused|expired`; `reused`/`revoked` trigger
+    `revokeFamily`. A wrong client (`client_mismatch`) never burns or reveals the token.
+  - `revokeFamily(familyId)` and `revokeRefreshToken(rawToken, clientDbId)` (client-scoped).
+- **`/token` (refactored):** grant_type is validated **before** client auth (preserves the
+  `unsupported_grant_type` contract), then `authenticateClient` (shared helper), then dispatch.
+  Both grants return via `issueTokenResponse`, which mints the access JWT **and** a refresh token
+  and now includes `refresh_token` in the JSON. Reuse is logged as `event: refresh_token_reuse`
+  (the analogue of Phase 4's `authz_code_reuse`).
+- **`POST /api/v1/oauth/revoke` (RFC 7009):** back-channel, client-authenticated, `Cache-Control:
+  no-store`. Revokes the token **and its family**, but only if the token belongs to the
+  authenticated client. **Always responds 200** for any valid client (even unknown/foreign
+  tokens) so it can't be used as a token-validity oracle. `token_type_hint` is accepted but
+  ignored — only refresh tokens are stateful (access tokens are stateless JWTs).
+- **No Redis blacklist for access tokens.** Access tokens remain short-lived (15 min) stateless
+  JWTs; revocation acts on the refresh-token family, not on already-issued access tokens. If
+  immediate access-token revocation is ever needed, that's a Phase 8 hardening item (introspection
+  or a short-TTL deny-list).
+- **Refresh tokens are issued unconditionally** for the authorization_code grant (no
+  `offline_access` gating — that scope isn't in the seeded catalogue). If OIDC (Phase 6) wants to
+  gate refresh issuance on `offline_access`, do it in `handleAuthorizationCodeGrant` /
+  `issueTokenResponse`.
+- **Scopes are carried through unchanged** on rotation (no scope-narrowing via a `scope` param
+  yet; RFC 6749 §6 allows a subset request — add later if needed).
 - _Anything Phase 6 needs:_ …
 
 ---
