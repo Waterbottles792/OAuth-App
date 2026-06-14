@@ -154,6 +154,9 @@ export const authConfig = {
     registerRateLimit: { windowSeconds: 60 * 60, max: 20 }, // account-creation spam
     mfaRateLimit: { windowSeconds: 15 * 60, max: 10 }, // second-factor brute force
     tokenRateLimit: { windowSeconds: 15 * 60, max: 60 }, // code/secret guessing + DoS
+    // Coarse per-IP ceiling applied to EVERY request (platform-wide backstop / DoS guard),
+    // generous enough not to impede a normal browsing + OAuth session.
+    globalRateLimit: { windowSeconds: 15 * 60, max: 600 },
     mfa: {
         issuer: 'OAuthPlatform',
         totpWindow: 1, // accept codes +/- 1 step (30s) to tolerate clock drift
@@ -194,6 +197,9 @@ export const keyConfig = {
         (process.env.NODE_ENV === 'production'
             ? ''
             : 'dev-only-insecure-key-encryption-secret-change-me'),
+    // On rotation, the retired key keeps being published via JWKS for this overlap window so
+    // tokens it already signed still verify. Must comfortably exceed the access-token lifetime.
+    rotationOverlapSeconds: parseInt(process.env.JWT_KEY_ROTATION_OVERLAP || String(24 * 60 * 60), 10),
 } as const;
 
 /**

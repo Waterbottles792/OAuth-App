@@ -17,6 +17,7 @@ import { serverConfig, securityConfig, validateConfig } from './config';
 import { logger } from './lib/logger';
 import { isAppError } from './lib/errors';
 import { requireAuth, requireAdmin } from './middleware/auth.middleware';
+import { globalRateLimit } from './middleware/rateLimit.middleware';
 import authRoutes from './routes/auth.routes';
 import clientRoutes from './routes/clients.routes';
 import oauthRoutes from './routes/oauth.routes';
@@ -85,21 +86,25 @@ export function createApp() {
         next();
     });
 
-    // ---- Health / status ----
+    // ---- Health (unmetered so liveness probes are never throttled) ----
     app.get('/health', (_req: Request, res: Response) => {
         res.status(200).json({
             status: 'healthy',
             timestamp: new Date().toISOString(),
             environment: serverConfig.env,
-            phase: 'PHASE_6_OPENID_CONNECT',
+            phase: 'PHASE_8_HARDENING',
         });
     });
+
+    // Platform-wide per-IP rate-limit backstop on every route below. Endpoint-specific
+    // limiters (login/token/etc.) add tighter caps on top.
+    app.use(globalRateLimit);
 
     app.get(`/api/${serverConfig.apiVersion}/status`, (_req: Request, res: Response) => {
         res.status(200).json({
             service: 'OAuth 2.1 + OIDC Authorization Server',
             version: serverConfig.apiVersion,
-            phase: 'Phase 6: OpenID Connect',
+            phase: 'Phase 8: Hardening & Operations',
             features: {
                 authentication: true, // Phase 1 ✅
                 mfa: true, // Phase 1 ✅

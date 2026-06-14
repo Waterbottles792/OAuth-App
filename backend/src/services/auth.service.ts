@@ -15,6 +15,8 @@ import { mailer } from '../lib/mailer';
 import { hashPassword, verifyPassword } from './password.service';
 import { createSession, createMfaChallenge, consumeMfaChallenge, SessionContext } from './session.service';
 import { isMfaEnabled, verifyChallenge } from './mfa.service';
+import { recordAudit } from './audit.service';
+import { recordLoginFailure } from '../lib/alerts';
 
 export interface User {
     id: string;
@@ -138,16 +140,22 @@ export async function login(
             '$argon2id$v=19$m=65536,t=3,p=4$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
             password,
         );
+        // No actor (don't log the attempted email — that's PII). IP + reason only.
+        await recordAudit({ event: 'login', result: 'failure', ip: ctx.ip, detail: { reason: 'unknown_user' } });
+        if (ctx.ip) await recordLoginFailure(ctx.ip);
         throw new UnauthorizedError('Invalid email or password');
     }
 
     if (isLocked(user)) {
+        await recordAudit({ event: 'login', result: 'failure', actorUserId: user.id, ip: ctx.ip, detail: { reason: 'locked' } });
         throw new UnauthorizedError('Account is temporarily locked. Try again later.');
     }
 
     const ok = await verifyPassword(user.password_hash, password);
     if (!ok) {
         await recordFailedAttempt(user);
+        await recordAudit({ event: 'login', result: 'failure', actorUserId: user.id, ip: ctx.ip, detail: { reason: 'bad_password' } });
+        if (ctx.ip) await recordLoginFailure(ctx.ip);
         throw new UnauthorizedError('Invalid email or password');
     }
 
@@ -167,10 +175,12 @@ export async function login(
 
     if (await isMfaEnabled(user.id)) {
         const challengeToken = await createMfaChallenge(user.id);
+        await recordAudit({ event: 'login', result: 'success', actorUserId: user.id, ip: ctx.ip, detail: { step: 'mfa_required' } });
         return { status: 'mfa_required', challengeToken };
     }
 
     const sessionToken = await createSession(user.id, ctx);
+    await recordAudit({ event: 'login', result: 'success', actorUserId: user.id, ip: ctx.ip });
     return { status: 'authenticated', sessionToken, user: publicUser };
 }
 
@@ -184,11 +194,15 @@ export async function completeMfaLogin(
     if (!userId) throw new UnauthorizedError('MFA challenge expired or invalid');
 
     const verified = await verifyChallenge(userId, code);
-    if (!verified) throw new UnauthorizedError('Invalid MFA code');
+    if (!verified) {
+        await recordAudit({ event: 'mfa_login', result: 'failure', actorUserId: userId, ip: ctx.ip });
+        throw new UnauthorizedError('Invalid MFA code');
+    }
 
     const user = await getUserById(userId);
     if (!user) throw new UnauthorizedError('Account not found');
 
     const sessionToken = await createSession(userId, ctx);
+    await recordAudit({ event: 'mfa_login', result: 'success', actorUserId: userId, ip: ctx.ip });
     return { sessionToken, user };
 }

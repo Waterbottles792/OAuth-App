@@ -10,6 +10,7 @@
     "migrate": "ts-node src/db/migrate.ts",
     "migrate:status": "ts-node src/db/migrate.ts status",
     "seed:demo": "ts-node scripts/seed-demo.ts",
+    "rotate:keys": "ts-node scripts/rotate-keys.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint src --ext .ts",

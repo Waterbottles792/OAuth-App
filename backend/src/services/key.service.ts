@@ -13,7 +13,7 @@
 
 import crypto from 'crypto';
 import { importSPKI, exportJWK, JWK } from 'jose';
-import { query } from '../db/pool';
+import { query, withTransaction } from '../db/pool';
 import { keyConfig } from '../config';
 import { randomToken } from '../lib/crypto';
 
@@ -25,6 +25,10 @@ export interface SigningKey {
 }
 
 let cachedActiveKey: SigningKey | null = null;
+let cachedAt = 0;
+// Re-read the active key from the DB at most this often, so a rotation performed elsewhere
+// (CLI / another instance) is picked up fleet-wide within the window without a restart.
+const ACTIVE_KEY_CACHE_TTL_MS = 60 * 1000;
 
 // ---- AES-256-GCM encryption of the private key at rest --------------------------------
 
@@ -78,7 +82,7 @@ async function loadActiveRow(): Promise<KeyRow | null> {
  * The decrypted key is cached in memory for the process lifetime.
  */
 export async function getActiveSigningKey(): Promise<SigningKey> {
-    if (cachedActiveKey) return cachedActiveKey;
+    if (cachedActiveKey && Date.now() - cachedAt < ACTIVE_KEY_CACHE_TTL_MS) return cachedActiveKey;
 
     let row = await loadActiveRow();
     if (!row) {
@@ -110,6 +114,7 @@ export async function getActiveSigningKey(): Promise<SigningKey> {
         publicKeyPem: row.public_key,
         privateKeyPem: decryptPrivateKey(row.private_key_enc),
     };
+    cachedAt = Date.now();
     return cachedActiveKey;
 }
 
@@ -131,8 +136,12 @@ export async function getPublicKeyPem(kid: string): Promise<string | null> {
 export async function getPublicJwks(): Promise<{ keys: JWK[] }> {
     await getActiveSigningKey(); // generate the first key on demand if none exists yet
 
+    // Serve the active key plus any retired key still inside its overlap window. Once a
+    // retired key's expires_at passes it drops out of the JWKS (its tokens are long expired).
     const { rows } = await query<{ kid: string; algorithm: string; public_key: string }>(
-        'SELECT kid, algorithm, public_key FROM jwt_keys ORDER BY active DESC, created_at DESC',
+        `SELECT kid, algorithm, public_key FROM jwt_keys
+          WHERE expires_at IS NULL OR expires_at > NOW()
+          ORDER BY active DESC, created_at DESC`,
     );
 
     const keys = await Promise.all(
@@ -146,7 +155,40 @@ export async function getPublicJwks(): Promise<{ keys: JWK[] }> {
     return { keys };
 }
 
+/**
+ * Rotate the signing key (Phase 8) with zero-downtime overlap:
+ *   1. retire the current active key — keep its row, mark inactive, set expires_at = now +
+ *      overlap so JWKS keeps publishing it (tokens it signed still verify);
+ *   2. generate + insert a new active key;
+ *   3. clear the in-memory cache so the next signature uses the new key.
+ * Done in one transaction so the single-active-key invariant always holds.
+ */
+export async function rotateSigningKey(): Promise<SigningKey> {
+    const kid = `key_${randomToken(8)}`;
+    const { publicKeyPem, privateKeyPem } = generateRsaKeypair();
+    const privateKeyEnc = encryptPrivateKey(privateKeyPem);
+
+    await withTransaction(async (client) => {
+        await client.query(
+            `UPDATE jwt_keys
+                SET active = FALSE,
+                    expires_at = NOW() + ($1 || ' seconds')::interval
+              WHERE active = TRUE`,
+            [String(keyConfig.rotationOverlapSeconds)],
+        );
+        await client.query(
+            `INSERT INTO jwt_keys (kid, algorithm, public_key, private_key_enc, active)
+             VALUES ($1, $2, $3, $4, TRUE)`,
+            [kid, keyConfig.signingAlgorithm, publicKeyPem, privateKeyEnc],
+        );
+    });
+
+    clearKeyCache();
+    return getActiveSigningKey();
+}
+
 /** Test/rotation helper: drop the in-memory cache so the next call reloads from the DB. */
 export function clearKeyCache(): void {
     cachedActiveKey = null;
+    cachedAt = 0;
 }

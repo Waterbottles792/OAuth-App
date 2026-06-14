@@ -89,3 +89,11 @@ export const tokenRateLimit = rateLimit({
     windowSeconds: authConfig.tokenRateLimit.windowSeconds,
     keyFn: byIp,
 });
+
+/** Coarse per-IP limiter applied to every request (platform-wide backstop). */
+export const globalRateLimit = rateLimit({
+    keyPrefix: 'global',
+    max: authConfig.globalRateLimit.max,
+    windowSeconds: authConfig.globalRateLimit.windowSeconds,
+    keyFn: byIp,
+});

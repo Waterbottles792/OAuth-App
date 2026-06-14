@@ -84,7 +84,7 @@ makes it survivable across context resets.
 | 5 | Refresh Tokens & Revocation | ✅ Complete | 2026-06-14 |
 | 6 | OpenID Connect | ✅ Complete | 2026-06-14 |
 | 7 | Frontend & UX | ✅ Complete | 2026-06-14 |
-| 8 | Hardening & Operations | ⏳ Not started | — |
+| 8 | Hardening & Operations | ✅ Complete | 2026-06-15 |
 
 **Dependency graph (what truly blocks what):**
 ```
@@ -701,7 +701,7 @@ A security review of Phases 0–5 produced these fixes (commit after the Phase 5
 
 **Goal:** Production readiness: audit logging, key rotation, monitoring, full rate limiting.
 
-**Status:** ⏳ Not started
+**Status:** ✅ Completed (2026-06-15)
 
 ### Prerequisites
 - The flows you intend to ship (ideally 1–6) are implemented.
@@ -718,16 +718,40 @@ A security review of Phases 0–5 produced these fixes (commit after the Phase 5
 4. Security pass: dependency audit, headers review, pen-test checklist.
 
 ### Acceptance criteria
-- [ ] Audit log is append-only and captures the full event set; no PII/secret leakage in logs.
-- [ ] Key rotation works with zero-downtime validation (old + new keys both verify during overlap).
-- [ ] Rate limits enforced platform-wide; alert conditions fire in tests.
+- [x] Audit log is append-only and captures the full event set; no PII/secret leakage in logs.
+- [x] Key rotation works with zero-downtime validation (old + new keys both verify during overlap).
+- [x] Rate limits enforced platform-wide; alert conditions fire in tests.
 
 ### Definition of Done
-- [ ] Acceptance criteria pass; Phase 8 checklist in PHASE_GUIDE ticked.
-- [ ] Update Current Status. Commit `feat: Phase 8 - Hardening & Operations`.
+- [x] Acceptance criteria pass; Phase 8 checklist in PHASE_GUIDE ticked. **105 backend tests pass.**
+- [x] Update Current Status. Commit `feat: Phase 8 - Hardening & Operations`.
 
-### Handoff Notes
-- _Rotation cadence & overlap window; log sink:_ …
+### Handoff Notes (filled in 2026-06-15)
+- **Audit log (`audit_logs`, migration 008):** append-only — a BEFORE UPDATE/DELETE trigger
+  raises; TRUNCATE still allowed (revoke it from the app role in prod). `audit.service.recordAudit`
+  is best-effort (never throws into the request). Events: `login`/`mfa_login` (success/failure
+  with reason, no email/PII), `consent` (approved/denied), `authz_code_issued`,
+  `access_token_issued`, `refresh_token_rotated`, `refresh_token_reuse`/`authz_code_reuse`
+  (detected), `token_revoked`. Detail JSON holds identifiers/scope only — never secrets, raw
+  codes, tokens, or verifiers (test asserts this).
+- **Alerting (`lib/alerts.ts`):** pluggable handler (`setAlertHandler`; default = error log).
+  `triggerAlert` fires immediately (refresh/code reuse). `recordLoginFailure` (per-IP, threshold
+  10/5min) and `recordSignatureFailure` (global, 5/5min) count in Redis (`alert:*`) and alert on
+  threshold. **Wire the handler to a real sink (PagerDuty/Slack/SIEM) in prod.**
+- **Key rotation:** `key.service.rotateSigningKey()` (CLI `npm run rotate:keys`) — one transaction:
+  retire the active key (`active=FALSE`, `expires_at = NOW()+JWT_KEY_ROTATION_OVERLAP`, default
+  **24h**) and insert a new active key. JWKS publishes any key still inside its overlap window;
+  `verifyAccessToken` resolves by `kid` so older tokens keep verifying. The in-process active-key
+  cache has a **60s TTL**, so a fleet picks up a rotation within ~1 min without restart. **Cadence:
+  monthly** suggested.
+- **Rate limiting:** per-endpoint limiters (login ×2, register, mfa, token) plus a platform-wide
+  per-IP `globalRateLimit` (600/15min) on every route except `/health`. PKCE `code_verifier` is
+  now validated for length/charset (RFC 7636) at `/token`.
+- **Log sink:** audit → Postgres `audit_logs`; app/security logs → winston (`lib/logger`); alerts
+  → the alert handler. No external sink wired (deferred).
+- **Security pass:** `docs/SECURITY_PASS.md` — backend `npm audit` clean; frontend advisories are
+  dev/build-tooling only (Next 14 transitive), tracked not force-upgraded. Deferred items:
+  access-token revocation/introspection, double-submit CSRF token, CSP nonces, external pentest/WAF.
 
 ---
 

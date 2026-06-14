@@ -34,6 +34,8 @@ import {
 } from '../services/refreshtoken.service';
 import { getUserById } from '../services/auth.service';
 import { buildIdentityClaims } from '../lib/oidc';
+import { recordAudit } from '../services/audit.service';
+import { triggerAlert, recordSignatureFailure } from '../lib/alerts';
 import { logger } from '../lib/logger';
 
 const router = Router();
@@ -267,6 +269,14 @@ router.post(
 
         const approved = req.body.approved === true || req.body.approved === 'true';
         if (!approved) {
+            await recordAudit({
+                event: 'consent',
+                result: 'failure',
+                actorUserId: req.user!.id,
+                clientId: v.client.client_id,
+                ip: req.ip,
+                detail: { decision: 'denied' },
+            });
             res.redirect(
                 buildRedirect(v.redirectUri, {
                     error: 'access_denied',
@@ -285,6 +295,14 @@ router.post(
             scopes: v.scopes,
             codeChallenge: v.codeChallenge,
             nonce: v.nonce,
+        });
+        await recordAudit({
+            event: 'authz_code_issued',
+            result: 'success',
+            actorUserId: req.user!.id,
+            clientId: v.client.client_id,
+            ip: req.ip,
+            detail: { scope: v.scopes.join(' '), decision: 'approved' },
         });
         res.redirect(buildRedirect(v.redirectUri, { code, state: v.state }));
     }),
@@ -381,15 +399,23 @@ async function issueTokenResponse(
     res.status(200).set('Cache-Control', 'no-store').set('Pragma', 'no-cache').json(body);
 }
 
+// PKCE code_verifier must be 43–128 chars of the unreserved set (RFC 7636 §4.1).
+const PKCE_VERIFIER_RE = /^[A-Za-z0-9\-._~]{43,128}$/;
+
 async function handleAuthorizationCodeGrant(
     res: Response,
     client: ClientRecord,
     b: Record<string, string | undefined>,
+    ip?: string,
 ): Promise<void> {
     const { code, redirect_uri: redirectUri, code_verifier: codeVerifier } = b;
 
     if (!code || !redirectUri || !codeVerifier) {
         return tokenError(res, 400, 'invalid_request', 'code, redirect_uri and code_verifier are required');
+    }
+    // Reject malformed verifiers up front (RFC 7636 length/charset).
+    if (!PKCE_VERIFIER_RE.test(codeVerifier)) {
+        return tokenError(res, 400, 'invalid_grant', 'code_verifier must be 43–128 unreserved characters');
     }
 
     // Single-use consumption: the code is burned here, even if a later check fails.
@@ -397,6 +423,8 @@ async function handleAuthorizationCodeGrant(
     if (!consumed.ok || !consumed.record) {
         if (consumed.reason === 'already_used') {
             logger.warn({ event: 'authz_code_reuse', clientId: client.client_id });
+            await recordAudit({ event: 'authz_code_reuse', result: 'detected', clientId: client.client_id, ip });
+            triggerAlert('authz_code_reuse', { client_id: client.client_id });
         }
         return tokenError(res, 400, 'invalid_grant', 'Authorization code is invalid, expired, or already used');
     }
@@ -425,12 +453,21 @@ async function handleAuthorizationCodeGrant(
         wantsRefresh ? { family: null } : null,
         record.nonce, // OIDC nonce -> ID token
     );
+    await recordAudit({
+        event: 'access_token_issued',
+        result: 'success',
+        actorUserId: record.user_id,
+        clientId: client.client_id,
+        ip,
+        detail: { grant: 'authorization_code', scope: record.scopes.join(' '), refresh: wantsRefresh },
+    });
 }
 
 async function handleRefreshTokenGrant(
     res: Response,
     client: ClientRecord,
     b: Record<string, string | undefined>,
+    ip?: string,
 ): Promise<void> {
     const presented = b.refresh_token;
     if (!presented) {
@@ -442,6 +479,8 @@ async function handleRefreshTokenGrant(
         if (result.reason === 'reused' || result.reason === 'revoked') {
             // Replay of a rotated/revoked token: the whole family was just revoked.
             logger.warn({ event: 'refresh_token_reuse', clientId: client.client_id });
+            await recordAudit({ event: 'refresh_token_reuse', result: 'detected', clientId: client.client_id, ip });
+            triggerAlert('refresh_token_reuse', { client_id: client.client_id });
         }
         return tokenError(res, 400, 'invalid_grant', 'Refresh token is invalid, expired, or has been revoked');
     }
@@ -455,6 +494,14 @@ async function handleRefreshTokenGrant(
             parentTokenHash: old.token_hash,
             familyExpiresAt: old.family_expires_at,
         },
+    });
+    await recordAudit({
+        event: 'refresh_token_rotated',
+        result: 'success',
+        actorUserId: old.user_id,
+        clientId: client.client_id,
+        ip,
+        detail: { family: old.token_family_id },
     });
 }
 
@@ -484,9 +531,9 @@ router.post(
         }
 
         if (b.grant_type === 'authorization_code') {
-            return handleAuthorizationCodeGrant(res, client, b);
+            return handleAuthorizationCodeGrant(res, client, b, req.ip);
         }
-        return handleRefreshTokenGrant(res, client, b);
+        return handleRefreshTokenGrant(res, client, b, req.ip);
     }),
 );
 
@@ -509,7 +556,16 @@ router.post(
         if (token) {
             // token_type_hint is advisory; we only manage refresh tokens (access tokens are
             // stateless JWTs). Unknown/foreign tokens are silently ignored per RFC 7009 §2.2.
-            await revokeRefreshToken(token, client.id);
+            const result = await revokeRefreshToken(token, client.id);
+            if (result.found) {
+                await recordAudit({
+                    event: 'token_revoked',
+                    result: 'success',
+                    clientId: client.client_id,
+                    ip: req.ip,
+                    detail: { family: result.familyId },
+                });
+            }
         }
 
         res.status(200).set('Cache-Control', 'no-store').set('Pragma', 'no-cache').json({});
@@ -545,6 +601,8 @@ router.get(
         try {
             payload = await verifyAccessToken(token);
         } catch {
+            // Verification failures can indicate forgery attempts — feed the spike detector.
+            await recordSignatureFailure();
             res.status(401)
                 .set('WWW-Authenticate', 'Bearer error="invalid_token"')
                 .json({ error: 'invalid_token', error_description: 'The access token is invalid or expired' });

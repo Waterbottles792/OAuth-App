@@ -562,19 +562,28 @@ Expose secure flows to users and developers.
 
 ## Phase 8: Hardening & Operations
 
-**Status**: ⏳ Not Started
+**Status**: ✅ Completed (2026-06-15)
+
+> Implemented: immutable `audit_logs` (migration 008, append-only trigger; events wired for
+> login/MFA/consent/code-issue/token-issue/refresh-rotate/reuse/revoke; no PII or secrets), a
+> pluggable alerting hook (`lib/alerts.ts` — immediate on reuse, threshold on login- &
+> signature-failure spikes), zero-downtime JWT key rotation (`key.service.rotateSigningKey` +
+> `npm run rotate:keys`; retired key served via JWKS for a 24h overlap; 60s active-key cache
+> TTL for fleet pickup), a platform-wide per-IP rate-limit backstop plus PKCE verifier
+> length/charset validation, and a dependency/headers/pen-test `docs/SECURITY_PASS.md`. 105
+> backend tests passing.
 
 ### Purpose
 Production readiness.
 
 ### Implementation
-- Immutable audit logging (all OAuth events)
-- Key rotation automation
-- Monitoring and alerting
-- Rate limiting on all endpoints
-- DDoS protection
-- Penetration testing
-- Security audit
+- [x] Immutable audit logging (all OAuth events) — `audit_logs` append-only (migration 008)
+- [x] Key rotation automation — `rotateSigningKey` + `npm run rotate:keys`, JWKS overlap window
+- [x] Monitoring and alerting — `lib/alerts.ts` hooks (reuse, login/signature spikes); wire the sink
+- [x] Rate limiting on all endpoints — per-endpoint limiters + platform-wide per-IP backstop
+- [ ] DDoS protection — infra/WAF level (out of repo scope; rate-limit backstop is the app layer)
+- [ ] Penetration testing — external engagement (checklist in `docs/SECURITY_PASS.md`)
+- [x] Security audit — `docs/SECURITY_PASS.md` (deps, headers, pen-test checklist, deferrals)
 
 ---
 
