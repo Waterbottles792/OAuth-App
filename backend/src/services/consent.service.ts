@@ -59,6 +59,25 @@ export async function hasConsentFor(
     return scopesNotAllowed(requiredScopes, consent.scopes).length === 0;
 }
 
+export interface ScopeDetail {
+    name: string;
+    description: string | null;
+}
+
+/**
+ * Look up human-readable descriptions for a set of scope names (for the consent screen),
+ * preserving the requested order. Unknown scopes come back with a null description.
+ */
+export async function getScopeDetails(names: string[]): Promise<ScopeDetail[]> {
+    if (names.length === 0) return [];
+    const { rows } = await query<{ name: string; description: string | null }>(
+        'SELECT name, description FROM oauth_scopes WHERE name = ANY($1)',
+        [names],
+    );
+    const byName = new Map(rows.map((r) => [r.name, r.description]));
+    return names.map((name) => ({ name, description: byName.get(name) ?? null }));
+}
+
 export async function revokeConsent(userId: string, clientDbId: string): Promise<void> {
     await query('DELETE FROM user_consents WHERE user_id = $1 AND client_id = $2', [
         userId,

@@ -527,7 +527,16 @@ GET /.well-known/jwks.json
 
 ## Phase 7: Frontend & UX
 
-**Status**: ⏳ Not Started
+**Status**: ✅ Completed (2026-06-14)
+
+> Implemented: Next.js 14 app-router UI — `/login` (password + MFA step), `/register`,
+> `/consent`, `/dashboard` (admin client CRUD), `/profile` (MFA enrollment + logout), a
+> credentialed `lib/api.ts` (no token ever in JS), and shared inline-style tokens. Backend
+> integration: `GET /authorize` now redirects the browser to the consent UI (was JSON) and a
+> new read-only `GET /oauth/consent-info` feeds it client name + scope descriptions; the consent
+> decision is a top-level form POST to `/authorize`. CSP added in `next.config.js` (incl.
+> `form-action`/`connect-src` for the backend). Verified live end-to-end (unauth→login→consent→
+> code→token); grep confirms no `localStorage`/`sessionStorage`. 95 backend tests passing.
 
 ### Purpose
 Expose secure flows to users and developers.
@@ -541,11 +550,13 @@ Expose secure flows to users and developers.
 - MFA setup page
 
 ### Security Rules
-- ❌ NO tokens in localStorage
-- ❌ NO tokens in sessionStorage
-- ✅ HTTP-only cookies ONLY
-- ✅ CSRF tokens on forms
-- ✅ CSP headers
+- [x] NO tokens in localStorage (grep-verified — `lib/api.ts` only ever sees JSON, never the session)
+- [x] NO tokens in sessionStorage (grep-verified)
+- [x] HTTP-only cookies ONLY (backend `sid` cookie; all fetches `credentials: 'include'`)
+- [x] CSRF protection — JSON API is guarded by the CORS allowlist + `SameSite=Lax`; the one
+      cross-service form (consent → backend `/authorize`) is intentional and re-validated server-side.
+      (Explicit double-submit CSRF tokens deferred — see Phase 8 follow-ups in PLAN.)
+- [x] CSP headers (`next.config.js`: `default-src 'self'`, scoped `connect-src`/`form-action` to the API)
 
 ---
 

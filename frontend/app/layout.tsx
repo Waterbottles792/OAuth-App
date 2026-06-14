@@ -5,13 +5,17 @@
  * Phase 7: Will include navigation, authentication state, etc.
  */
 
-import type { Metadata } from 'next';
+import type { Metadata, Viewport } from 'next';
 
 export const metadata: Metadata = {
     title: 'OAuth 2.1 + OIDC Platform',
     description: 'Production-grade Authorization and Identity Platform',
-    viewport: 'width=device-width, initial-scale=1',
     robots: 'noindex, nofollow', // Don't index during development
+};
+
+export const viewport: Viewport = {
+    width: 'device-width',
+    initialScale: 1,
 };
 
 export default function RootLayout({

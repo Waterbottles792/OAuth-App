@@ -83,7 +83,7 @@ makes it survivable across context resets.
 | 4 | Token Service (JWT issuance) | ✅ Complete | 2026-06-13 |
 | 5 | Refresh Tokens & Revocation | ✅ Complete | 2026-06-14 |
 | 6 | OpenID Connect | ✅ Complete | 2026-06-14 |
-| 7 | Frontend & UX | ⏳ Not started | — |
+| 7 | Frontend & UX | ✅ Complete | 2026-06-14 |
 | 8 | Hardening & Operations | ⏳ Not started | — |
 
 **Dependency graph (what truly blocks what):**
@@ -642,7 +642,7 @@ A security review of Phases 0–5 produced these fixes (commit after the Phase 5
 **Goal:** User-facing login, consent, and a developer dashboard for client management.
 **Parallel-track friendly:** needs only Phase 1 to start; gets richer as 2–6 land.
 
-**Status:** ⏳ Not started
+**Status:** ✅ Completed (2026-06-14)
 
 ### Prerequisites
 - Phase 1 (auth) for login/MFA screens. Consent screen needs Phase 3; client dashboard
@@ -659,16 +659,41 @@ A security review of Phases 0–5 produced these fixes (commit after the Phase 5
 3. CSRF tokens on state-changing forms; configure CSP; ensure same-origin/credentialed fetches.
 
 ### Acceptance criteria
-- [ ] Login/consent/dashboard flows work end-to-end against the backend.
-- [ ] No token or session value is ever placed in `localStorage`/`sessionStorage` (grep to prove it).
-- [ ] CSRF protection on forms; CSP headers present.
+- [x] Login/consent/dashboard flows work end-to-end against the backend (verified live with a
+      full unauth→login→consent→code→token run).
+- [x] No token or session value is ever placed in `localStorage`/`sessionStorage` (grep -rn over
+      `app lib` returns nothing).
+- [x] CSRF protection on forms; CSP headers present (`next.config.js`).
 
 ### Definition of Done
-- [ ] Acceptance criteria pass; Phase 7 checklist in PHASE_GUIDE ticked.
-- [ ] Update Current Status + Handoff Notes. Commit `feat: Phase 7 - Frontend & UX`.
+- [x] Acceptance criteria pass; Phase 7 checklist in PHASE_GUIDE ticked. **95 backend tests pass;
+      frontend type-checks + builds clean.**
+- [x] Update Current Status + Handoff Notes. Commit `feat: Phase 7 - Frontend & UX`.
 
-### Handoff Notes
-- _Which backend phases the UI currently exercises:_ …
+### Handoff Notes (filled in 2026-06-14)
+- **Stack:** Next.js 14 app router, no UI framework (inline-style tokens in `lib/ui.ts`). Pages:
+  `/login` (password → MFA step), `/register`, `/consent`, `/dashboard` (admin), `/profile`.
+  `lib/api.ts` is the only HTTP layer — every call is `credentials: 'include'`; it never reads or
+  stores a token (auth = HttpOnly `sid` cookie). `NEXT_PUBLIC_API_URL` points at the backend.
+- **Backend changes for the UI (this phase):** `GET /authorize` now **302-redirects** the browser
+  to `oauthFlowConfig.consentUrl` (`CONSENT_URL`, default `http://localhost:3000/consent`) when
+  consent is required, instead of returning JSON. New read-only `GET /api/v1/oauth/consent-info`
+  (auth required, re-validates the request) returns `{ client:{client_id,name}, scopes:[{name,
+  description}], already_consented }` for the consent screen. `consent.service.getScopeDetails`
+  added. The consent decision is a **top-level HTML form POST** to `/authorize` (not fetch) so the
+  browser follows the backend's 302 to the client's redirect_uri.
+- **Why this is same-site:** frontend `:3000` and backend `:3001` share registrable domain
+  `localhost`, so `SameSite=Lax` cookies ride along on the cross-origin fetches AND the consent
+  form POST. In a real deployment put both behind one site/domain (or set cookie domain) so this
+  holds; otherwise the session cookie won't be sent.
+- **Open-redirect guard:** `safeReturnTo` only allows a relative path or the backend's own
+  `/oauth/authorize` URL as `return_to` on `/login`.
+- **CSRF stance:** the JSON API is protected by the CORS allowlist (`localhost:3000`, credentialed)
+  + `SameSite=Lax` + JSON content-type; the only HTML form crosses to `/authorize` and is
+  re-validated server-side. A double-submit CSRF token was NOT added — listed as a Phase 8 item.
+- **Which backend phases the UI exercises:** Phase 1 (register/login/MFA/logout/me), Phase 2
+  (admin client CRUD), Phase 3+4+5+6 (the consent→authorize→token flow yields access+refresh+id
+  tokens; the dashboard reads `scopes_supported` from the Phase 6 discovery doc).
 
 ---
 

@@ -116,14 +116,34 @@ describe('/authorize — authentication & consent flow', () => {
         expect(loc.searchParams.get('return_to')).toContain('/oauth/authorize');
     });
 
-    it('authenticated user without prior consent gets a consent prompt', async () => {
+    it('authenticated user without prior consent is redirected to the consent UI', async () => {
         const { agent, clientId } = await setup();
         const { challenge } = pkce();
         const res = await agent.get(AUTHORIZE).query(authQuery(clientId, challenge));
+        expect(res.status).toBe(302);
+        const loc = new URL(res.headers.location);
+        expect(loc.origin + loc.pathname).toBe('http://localhost:3000/consent');
+        expect(loc.searchParams.get('client_id')).toBe(clientId);
+        expect(loc.searchParams.get('code_challenge')).toBe(challenge);
+        expect(loc.searchParams.get('scope')).toContain('openid');
+    });
+
+    it('/consent-info returns client + scope details for a logged-in user', async () => {
+        const { agent, clientId } = await setup();
+        const { challenge } = pkce();
+        const res = await agent.get('/api/v1/oauth/consent-info').query(authQuery(clientId, challenge));
         expect(res.status).toBe(200);
-        expect(res.body.consent_required).toBe(true);
-        expect(res.body.scopes.sort()).toEqual(['email', 'openid']);
-        expect(res.body.authorization_request.code_challenge).toBe(challenge);
+        expect(res.body.client.client_id).toBe(clientId);
+        expect(res.body.scopes.map((s: { name: string }) => s.name).sort()).toEqual(['email', 'openid']);
+        expect(res.body.already_consented).toBe(false);
+    });
+
+    it('/consent-info requires authentication', async () => {
+        const { clientId } = await setup();
+        const { challenge } = pkce();
+        const res = await request(app).get('/api/v1/oauth/consent-info').query(authQuery(clientId, challenge));
+        expect(res.status).toBe(401);
+        expect(res.body.error).toBe('login_required');
     });
 
     it('approving consent issues a code and echoes state', async () => {

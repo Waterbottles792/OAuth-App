@@ -171,6 +171,9 @@ export const oauthFlowConfig = {
     // Where the authorization endpoint sends an unauthenticated user to log in. The frontend
     // is expected to send the user back to the original /authorize URL afterwards.
     loginUrl: process.env.LOGIN_URL || 'http://localhost:3000/login',
+    // Where the authorization endpoint sends a logged-in user when consent is required. The
+    // consent page fetches /oauth/consent-info and POSTs the decision back to /authorize.
+    consentUrl: process.env.CONSENT_URL || 'http://localhost:3000/consent',
     // JWT issuer identity (the `iss` claim) — must be stable; resource servers verify it.
     issuer: process.env.ISSUER_URL || `http://localhost:${serverConfig.port}`,
     // Default audience (`aud`) for access tokens until resource indicators exist.

@@ -24,7 +24,7 @@ import {
     verifyPkceS256,
 } from '../lib/oauth';
 import { getClientByClientId, verifyClientSecret, ClientRecord } from '../services/client.service';
-import { hasConsentFor, recordConsent } from '../services/consent.service';
+import { hasConsentFor, recordConsent, getScopeDetails } from '../services/consent.service';
 import { issueCode, consumeCode } from '../services/authcode.service';
 import { signAccessToken, signIdToken, verifyAccessToken } from '../services/token.service';
 import {
@@ -213,12 +213,11 @@ router.get(
             return;
         }
 
-        // Consent required — describe the request so the UI (Phase 7) can render it and POST back.
-        res.status(200).json({
-            consent_required: true,
-            client: { client_id: v.client.client_id, name: v.client.name },
-            scopes: v.scopes,
-            authorization_request: {
+        // Consent required — send the browser to the consent UI (Phase 7), carrying the
+        // validated request params. The consent page fetches /consent-info to render and POSTs
+        // the decision back to POST /authorize.
+        res.redirect(
+            buildRedirect(oauthFlowConfig.consentUrl, {
                 client_id: v.client.client_id,
                 redirect_uri: v.redirectUri,
                 response_type: 'code',
@@ -227,7 +226,32 @@ router.get(
                 code_challenge: v.codeChallenge,
                 code_challenge_method: 'S256',
                 nonce: v.nonce,
-            },
+            }),
+        );
+    }),
+);
+
+// GET /consent-info — read-only details for the consent screen (client name + scope
+// descriptions). Requires login; validates the request the same way /authorize does, so it
+// can't be used to probe arbitrary clients. Issues nothing.
+router.get(
+    '/consent-info',
+    loadUser,
+    h(async (req, res) => {
+        if (!req.user) {
+            res.status(401).json({ error: 'login_required', error_description: 'Authentication required' });
+            return;
+        }
+        const v = await validateAuthorizeRequest(paramsFromQuery(req));
+        if (v.kind !== 'ok') {
+            const description = 'description' in v ? v.description : 'Invalid authorization request';
+            res.status(400).json({ error: v.error, error_description: description });
+            return;
+        }
+        res.status(200).json({
+            client: { client_id: v.client.client_id, name: v.client.name },
+            scopes: await getScopeDetails(v.scopes),
+            already_consented: await hasConsentFor(req.user.id, v.client.id, v.scopes),
         });
     }),
 );
