@@ -18,6 +18,7 @@ import { logger } from './lib/logger';
 import { isAppError } from './lib/errors';
 import { requireAuth, requireAdmin } from './middleware/auth.middleware';
 import { globalRateLimit } from './middleware/rateLimit.middleware';
+import { installAlertSink } from './lib/alerts';
 import authRoutes from './routes/auth.routes';
 import clientRoutes from './routes/clients.routes';
 import oauthRoutes from './routes/oauth.routes';
@@ -34,6 +35,9 @@ export { logger };
 // ============================================
 export function createApp() {
     const app = express();
+
+    // Route security alerts to the configured sink (logs always; webhook if ALERT_WEBHOOK_URL set).
+    installAlertSink();
 
     // Derive req.ip from X-Forwarded-For only as far as the configured proxy topology allows.
     // Must match the real deployment or IP-keyed rate limits become spoofable (see config).

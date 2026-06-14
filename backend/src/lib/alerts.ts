@@ -13,6 +13,7 @@
  */
 
 import { getRedis } from '../db/redis';
+import { alertConfig } from '../config';
 import { logger } from './logger';
 
 export interface SecurityAlert {
@@ -20,10 +21,20 @@ export interface SecurityAlert {
     context?: Record<string, unknown>;
 }
 
+/** Rough severity for routing/colour in the sink. */
+const SEVERITY: Record<string, 'critical' | 'high'> = {
+    refresh_token_reuse: 'critical',
+    authz_code_reuse: 'critical',
+    login_failure_spike: 'high',
+    token_signature_failure_spike: 'high',
+};
+
 export type AlertHandler = (alert: SecurityAlert) => void;
 
-const defaultHandler: AlertHandler = (alert) =>
-    logger.error({ event: 'SECURITY_ALERT', kind: alert.kind, ...alert.context });
+const logAlert: AlertHandler = (alert) =>
+    logger.error({ event: 'SECURITY_ALERT', kind: alert.kind, severity: SEVERITY[alert.kind] ?? 'high', ...alert.context });
+
+const defaultHandler: AlertHandler = logAlert;
 
 let handler: AlertHandler = defaultHandler;
 
@@ -33,6 +44,49 @@ export function setAlertHandler(h: AlertHandler): void {
 
 export function resetAlertHandler(): void {
     handler = defaultHandler;
+}
+
+/** Build the JSON body POSTed to the alert webhook. `text` is what Slack/Discord render. */
+export function buildAlertPayload(alert: SecurityAlert): Record<string, unknown> {
+    const severity = SEVERITY[alert.kind] ?? 'high';
+    return {
+        text: `🚨 [${alertConfig.environment}] security alert: ${alert.kind} (${severity})`,
+        kind: alert.kind,
+        severity,
+        environment: alertConfig.environment,
+        context: alert.context ?? {},
+        timestamp: new Date().toISOString(),
+    };
+}
+
+/** POST an alert to `url`. Best-effort: bounded by a timeout and never throws. */
+export async function postAlert(url: string, alert: SecurityAlert): Promise<void> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), alertConfig.timeoutMs);
+    try {
+        await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(buildAlertPayload(alert)),
+            signal: controller.signal,
+        });
+    } catch (err) {
+        logger.error({ event: 'alert_webhook_failed', kind: alert.kind, error: (err as Error).message });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+/**
+ * Install the production alert sink: always log, and additionally POST to the configured
+ * webhook when ALERT_WEBHOOK_URL is set. Called once at app startup. Tests that override the
+ * handler via setAlertHandler are unaffected.
+ */
+export function installAlertSink(): void {
+    setAlertHandler((alert) => {
+        logAlert(alert);
+        if (alertConfig.webhookUrl) void postAlert(alertConfig.webhookUrl, alert);
+    });
 }
 
 /** Fire an alert now (single-occurrence events). */

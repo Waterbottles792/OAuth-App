@@ -203,6 +203,18 @@ export const keyConfig = {
 } as const;
 
 /**
+ * Security alerting (Phase 8). Alerts are always logged; if a webhook URL is configured they
+ * are also POSTed to it (Slack/Discord/PagerDuty/generic all accept a JSON body). Leave unset
+ * to keep log-only behaviour (e.g. local/dev/tests).
+ */
+export const alertConfig = {
+    webhookUrl: process.env.ALERT_WEBHOOK_URL || '',
+    timeoutMs: parseInt(process.env.ALERT_WEBHOOK_TIMEOUT_MS || '3000', 10),
+    // Labels the source in the alert payload so a shared channel can tell environments apart.
+    environment: process.env.NODE_ENV || 'development',
+} as const;
+
+/**
  * Logging Configuration
  */
 export const loggingConfig = {

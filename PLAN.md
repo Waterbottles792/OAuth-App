@@ -737,7 +737,10 @@ A security review of Phases 0–5 produced these fixes (commit after the Phase 5
 - **Alerting (`lib/alerts.ts`):** pluggable handler (`setAlertHandler`; default = error log).
   `triggerAlert` fires immediately (refresh/code reuse). `recordLoginFailure` (per-IP, threshold
   10/5min) and `recordSignatureFailure` (global, 5/5min) count in Redis (`alert:*`) and alert on
-  threshold. **Wire the handler to a real sink (PagerDuty/Slack/SIEM) in prod.**
+  threshold. **Sink wired:** `installAlertSink()` (called in `createApp`) logs every alert and,
+  when `ALERT_WEBHOOK_URL` is set, POSTs a Slack/Discord/PagerDuty/generic-compatible JSON body
+  (`buildAlertPayload`; 3s timeout, errors swallowed). Verified live end-to-end. Set the env var
+  to your real channel in prod.
 - **Key rotation:** `key.service.rotateSigningKey()` (CLI `npm run rotate:keys`) — one transaction:
   retire the active key (`active=FALSE`, `expires_at = NOW()+JWT_KEY_ROTATION_OVERLAP`, default
   **24h**) and insert a new active key. JWKS publishes any key still inside its overlap window;

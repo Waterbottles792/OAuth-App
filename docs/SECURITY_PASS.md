@@ -45,7 +45,7 @@ complements the in-code controls and the audit-log + alerting + key-rotation wor
 | Brute force | Argon2id, account lockout, per-(IP,email) + per-IP login limits, MFA single-use challenge | ✅ |
 | Rate limiting | per-endpoint + platform-wide per-IP backstop | ✅ |
 | Audit trail | append-only `audit_logs` (login/consent/issue/refresh/revoke/reuse), no PII/secrets | ✅ |
-| Alerting | reuse (immediate), login-failure & signature-failure spikes (threshold) | ✅ hooks (wire to sink) |
+| Alerting | reuse (immediate), login-failure & signature-failure spikes (threshold); logs + `ALERT_WEBHOOK_URL` sink | ✅ wired (webhook) |
 | Key rotation | zero-downtime overlap; JWKS serves old+new; cache TTL for fleet pickup | ✅ |
 | `trust proxy` spoofing | configurable `TRUST_PROXY` (must match real topology) | ✅ |
 
@@ -58,7 +58,9 @@ complements the in-code controls and the audit-log + alerting + key-rotation wor
   one cross-service HTML form (consent → `/authorize`) is re-validated server-side. A
   double-submit CSRF token is not yet added.
 - **CSP nonces** — frontend uses `'unsafe-inline'` for scripts/styles; tighten to nonces.
-- **Alert sink** — `setAlertHandler` defaults to error logs; wire to PagerDuty/Slack/SIEM.
+- **Alert sink** — wired: logs always, plus an outbound webhook when `ALERT_WEBHOOK_URL` is set
+  (verified live: a refresh-token reuse delivered a `critical` alert to a local receiver). Point it
+  at a Slack/PagerDuty/SIEM endpoint in prod.
 - **External pen-test & DDoS/WAF** — infra-level, out of repo scope.
 - **Frontend Next major upgrade** — clears the dev-tooling advisories above.
 
