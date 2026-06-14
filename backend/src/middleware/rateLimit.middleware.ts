@@ -45,6 +45,8 @@ export function rateLimit(opts: RateLimitOptions) {
     };
 }
 
+const byIp = (req: { ip?: string }) => req.ip ?? 'unknown';
+
 /** Login limiter keyed on client IP + submitted email. */
 export const loginRateLimit = rateLimit({
     keyPrefix: 'login',
@@ -56,7 +58,13 @@ export const loginRateLimit = rateLimit({
     },
 });
 
-const byIp = (req: { ip?: string }) => req.ip ?? 'unknown';
+/** Global per-IP login limiter — catches password spraying across many accounts from one IP. */
+export const loginIpRateLimit = rateLimit({
+    keyPrefix: 'login_ip',
+    max: authConfig.loginIpRateLimit.max,
+    windowSeconds: authConfig.loginIpRateLimit.windowSeconds,
+    keyFn: byIp,
+});
 
 /** Registration limiter (per IP) — throttles account-creation spam. */
 export const registerRateLimit = rateLimit({

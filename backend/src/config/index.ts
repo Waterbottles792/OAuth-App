@@ -62,11 +62,36 @@ export const redisConfig = {
 } as const;
 
 /**
+ * Parse the TRUST_PROXY env into a value Express's `trust proxy` accepts. The setting MUST
+ * match the real deployment: req.ip (and therefore every IP-keyed rate limit) is only
+ * trustworthy if Express trusts exactly the proxies actually in front of the app. A wrong
+ * value lets a client spoof X-Forwarded-For to rotate its rate-limit key.
+ *
+ *   unset      -> 1 in production (assume one proxy/LB), false otherwise (direct = use socket IP)
+ *   "false"    -> trust nothing (use the socket address)
+ *   "true"     -> trust all proxies (ONLY behind a trusted ingress that strips client XFF)
+ *   "2"        -> trust this many hops
+ *   "loopback,10.0.0.0/8" -> a preset name / CSV of trusted addresses or subnets
+ */
+function parseTrustProxy(raw: string | undefined): boolean | number | string {
+    if (raw === undefined || raw === '') return process.env.NODE_ENV === 'production' ? 1 : false;
+    if (raw === 'true') return true;
+    if (raw === 'false') return false;
+    const asNum = Number(raw);
+    if (Number.isInteger(asNum) && asNum >= 0) return asNum;
+    return raw; // preset name or CSV of IPs/subnets, passed through to Express
+}
+
+/**
  * Security Configuration
  */
 export const securityConfig = {
     // CORS: Explicit origin allowlist (no wildcards allowed)
     corsOrigins: process.env.CORS_ORIGINS?.split(',') || ['http://localhost:3000'],
+
+    // Express `trust proxy` — governs how req.ip is derived from X-Forwarded-For. Must match
+    // the real number/identity of proxies in front of the app (see parseTrustProxy).
+    trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
 
     // Rate limiting configuration (enforced in Phase 1+)
     rateLimit: {
@@ -117,6 +142,13 @@ export const authConfig = {
     loginRateLimit: {
         windowSeconds: 15 * 60, // 15 minutes
         maxAttempts: 5, // per IP+email within the window
+    },
+    // Global per-IP login ceiling — independent of the per-(IP,email) limiter above. Blunts
+    // password spraying (one IP trying ONE password across MANY accounts, which the per-email
+    // counter never trips). Set well above a NAT'd office's legitimate burst.
+    loginIpRateLimit: {
+        windowSeconds: 15 * 60, // 15 minutes
+        max: 50, // distinct attempts per IP within the window
     },
     // Per-IP limiters on other sensitive endpoints (defense in depth + DoS protection).
     registerRateLimit: { windowSeconds: 60 * 60, max: 20 }, // account-creation spam

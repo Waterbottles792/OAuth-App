@@ -554,10 +554,19 @@ A security review of Phases 0–5 produced these fixes (commit after the Phase 5
   `allowedGrantTypes: ['authorization_code']` to get access tokens but no refresh token).
   `createClient` now accepts `allowedGrantTypes` (default = full `SUPPORTED_GRANT_TYPES`) and
   validates it (`refresh_token` requires `authorization_code`).
-- **Lower-severity items left as noted follow-ups** (not yet fixed): IP-rate-limit spoofing tied to
-  `trust proxy: 1` + fail-open on Redis outage (deployment/Phase 8), no outstanding-access-token
-  revocation (stateless JWTs — Phase 8 introspection/denylist), PKCE verifier length not validated,
-  no anti-CSRF token on the consent POST (relies on `SameSite=lax`), client-existence timing oracle.
+- **M4 (rate-limit hardening) — addressed (2026-06-14).** `trust proxy` is no longer hardcoded to
+  `1`; it's derived from `TRUST_PROXY` (`securityConfig.trustProxy` / `parseTrustProxy`) and MUST be
+  set to match the real proxy topology in production (default: `1` in prod, `false` otherwise) — a
+  wrong value is what makes `req.ip` (and every IP-keyed limit) spoofable via X-Forwarded-For. Added
+  a **global per-IP login limiter** (`loginIpRateLimit`, 50/15min) alongside the per-(IP,email) one
+  to blunt password spraying across accounts from a single IP.
+  - *Fail-open on Redis outage was reviewed and kept intentionally:* login is backstopped by DB
+    account lockout, MFA by single-use challenge consumption (`consumeMfaChallenge` deletes on any
+    attempt → one guess per password login), and `/token` by 256-bit code/secret entropy. Failing
+    closed would trade real availability for no meaningful brute-force gain.
+- **Lower-severity items still open** (not yet fixed): no outstanding-access-token revocation
+  (stateless JWTs — Phase 8 introspection/denylist), PKCE verifier length not validated, no
+  anti-CSRF token on the consent POST (relies on `SameSite=lax`), client-existence timing oracle.
 - _Anything Phase 6 needs:_ …
 
 ---

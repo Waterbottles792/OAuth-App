@@ -16,7 +16,12 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { securityConfig, authConfig } from '../config';
 import { validate, registerSchema, loginSchema, totpCodeSchema } from '../lib/validation';
 import { UnauthorizedError } from '../lib/errors';
-import { loginRateLimit, registerRateLimit, mfaRateLimit } from '../middleware/rateLimit.middleware';
+import {
+    loginRateLimit,
+    loginIpRateLimit,
+    registerRateLimit,
+    mfaRateLimit,
+} from '../middleware/rateLimit.middleware';
 import { requireAuth } from '../middleware/auth.middleware';
 import * as authService from '../services/auth.service';
 import { destroySession } from '../services/session.service';
@@ -72,6 +77,7 @@ router.post(
 
 router.post(
     '/login',
+    loginIpRateLimit,
     loginRateLimit,
     h(async (req, res) => {
         const { email, password } = validate(loginSchema, req.body);

@@ -33,8 +33,9 @@ export { logger };
 export function createApp() {
     const app = express();
 
-    // Trust the first proxy hop so req.ip reflects the real client behind a load balancer.
-    app.set('trust proxy', 1);
+    // Derive req.ip from X-Forwarded-For only as far as the configured proxy topology allows.
+    // Must match the real deployment or IP-keyed rate limits become spoofable (see config).
+    app.set('trust proxy', securityConfig.trustProxy);
 
     app.use(
         helmet({
