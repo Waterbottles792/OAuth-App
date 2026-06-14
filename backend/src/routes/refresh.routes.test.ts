@@ -160,6 +160,100 @@ describe('Phase 5 — refresh tokens', () => {
         expect(byHash.rowCount).toBe(1);
     });
 
+    it('caps the family lifetime: rotation does not extend the absolute deadline', async () => {
+        const { res, clientId, clientSecret } = await exchangeForTokens();
+        const rootHash = sha256(res.body.refresh_token);
+        const { rows: rootRows } = await query<{ family_expires_at: Date }>(
+            'SELECT family_expires_at FROM refresh_tokens WHERE token_hash = $1',
+            [rootHash],
+        );
+        const familyDeadline = new Date(rootRows[0].family_expires_at).getTime();
+
+        const refreshed = await request(app).post(TOKEN).send({
+            grant_type: 'refresh_token',
+            refresh_token: res.body.refresh_token,
+            client_id: clientId,
+            client_secret: clientSecret,
+        });
+        const childHash = sha256(refreshed.body.refresh_token);
+        const { rows: childRows } = await query<{ family_expires_at: Date }>(
+            'SELECT family_expires_at FROM refresh_tokens WHERE token_hash = $1',
+            [childHash],
+        );
+        // The child inherits the SAME absolute deadline — rotation did not push it out.
+        expect(new Date(childRows[0].family_expires_at).getTime()).toBe(familyDeadline);
+    });
+
+    it('refuses to rotate once the family deadline has passed', async () => {
+        const { res, clientId, clientSecret } = await exchangeForTokens();
+        const raw = res.body.refresh_token;
+
+        // Family is past its absolute deadline, but the token itself would otherwise be valid.
+        await query(
+            `UPDATE refresh_tokens
+                SET family_expires_at = NOW() - interval '1 second',
+                    expires_at = NOW() + interval '1 day'
+              WHERE token_hash = $1`,
+            [sha256(raw)],
+        );
+
+        const refreshed = await request(app).post(TOKEN).send({
+            grant_type: 'refresh_token',
+            refresh_token: raw,
+            client_id: clientId,
+            client_secret: clientSecret,
+        });
+        expect(refreshed.status).toBe(400);
+        expect(refreshed.body.error).toBe('invalid_grant');
+    });
+
+    it('does not issue a refresh token to a client without the refresh_token grant', async () => {
+        await request(app).post('/api/v1/auth/register').send({ email: 'owner@example.com', password: PASSWORD });
+        const agent = request.agent(app);
+        await agent.post('/api/v1/auth/login').send({ email: 'owner@example.com', password: PASSWORD });
+        const { client, clientSecret } = await createClient({
+            name: 'Code-only App',
+            clientType: 'confidential',
+            redirectUris: [REDIRECT],
+            allowedScopes: ['openid', 'email'],
+            allowedGrantTypes: ['authorization_code'], // no refresh_token
+        });
+        const { verifier, challenge } = pkce();
+        const code = await getCode(agent, client.client_id, challenge);
+
+        const tokenRes = await request(app).post(TOKEN).send({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: REDIRECT,
+            client_id: client.client_id,
+            client_secret: clientSecret,
+            code_verifier: verifier,
+        });
+        expect(tokenRes.status).toBe(200);
+        expect(tokenRes.body.access_token).toBeTruthy();
+        expect(tokenRes.body.refresh_token).toBeUndefined();
+    });
+
+    it('rejects the refresh_token grant for a client not allowed it (unauthorized_client)', async () => {
+        await request(app).post('/api/v1/auth/register').send({ email: 'owner@example.com', password: PASSWORD });
+        const { client, clientSecret } = await createClient({
+            name: 'Code-only App',
+            clientType: 'confidential',
+            redirectUris: [REDIRECT],
+            allowedScopes: ['openid'],
+            allowedGrantTypes: ['authorization_code'],
+        });
+
+        const refreshed = await request(app).post(TOKEN).send({
+            grant_type: 'refresh_token',
+            refresh_token: 'irrelevant-the-grant-is-blocked',
+            client_id: client.client_id,
+            client_secret: clientSecret,
+        });
+        expect(refreshed.status).toBe(400);
+        expect(refreshed.body.error).toBe('unauthorized_client');
+    });
+
     it('rejects an expired refresh token', async () => {
         const { res, clientId, clientSecret } = await exchangeForTokens();
         const raw = res.body.refresh_token;

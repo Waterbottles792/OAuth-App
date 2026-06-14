@@ -289,33 +289,41 @@ async function authenticateClient(
     return client;
 }
 
-/** Mint an access token + a refresh token and write the RFC 6749 §5.1 success response. */
+/**
+ * Mint an access token and write the RFC 6749 §5.1 success response. A refresh token is
+ * included only when `refresh` is provided: at code exchange that means the client is allowed
+ * the refresh_token grant (a new family begins); on rotation `refresh.family` continues the
+ * existing family within its absolute deadline.
+ */
 async function issueTokenResponse(
     res: Response,
     client: ClientRecord,
     userId: string,
     scopes: string[],
-    family: { familyId: string; parentTokenHash: string } | null,
+    refresh: { family: { familyId: string; parentTokenHash: string; familyExpiresAt: Date } | null } | null,
 ): Promise<void> {
     const access = await signAccessToken({ userId, clientId: client.client_id, scopes });
-    const refresh = await issueRefreshToken({
-        userId,
-        clientDbId: client.id,
-        scopes,
-        familyId: family?.familyId,
-        parentTokenHash: family?.parentTokenHash,
-    });
 
-    res.status(200)
-        .set('Cache-Control', 'no-store')
-        .set('Pragma', 'no-cache')
-        .json({
-            access_token: access.accessToken,
-            token_type: access.tokenType,
-            expires_in: access.expiresIn,
-            refresh_token: refresh.refreshToken,
-            scope: access.scope,
+    const body: Record<string, unknown> = {
+        access_token: access.accessToken,
+        token_type: access.tokenType,
+        expires_in: access.expiresIn,
+        scope: access.scope,
+    };
+
+    if (refresh) {
+        const issued = await issueRefreshToken({
+            userId,
+            clientDbId: client.id,
+            scopes,
+            familyId: refresh.family?.familyId,
+            parentTokenHash: refresh.family?.parentTokenHash,
+            familyExpiresAt: refresh.family?.familyExpiresAt,
         });
+        body.refresh_token = issued.refreshToken;
+    }
+
+    res.status(200).set('Cache-Control', 'no-store').set('Pragma', 'no-cache').json(body);
 }
 
 async function handleAuthorizationCodeGrant(
@@ -352,8 +360,9 @@ async function handleAuthorizationCodeGrant(
         return tokenError(res, 400, 'invalid_grant', 'PKCE verification failed');
     }
 
-    // New refresh-token family begins at code exchange.
-    await issueTokenResponse(res, client, record.user_id, record.scopes, null);
+    // Only mint a refresh token (a new family) if this client is allowed the refresh_token grant.
+    const wantsRefresh = client.allowed_grant_types.includes('refresh_token');
+    await issueTokenResponse(res, client, record.user_id, record.scopes, wantsRefresh ? { family: null } : null);
 }
 
 async function handleRefreshTokenGrant(
@@ -376,10 +385,14 @@ async function handleRefreshTokenGrant(
     }
     const old = result.record;
 
-    // Rotate: mint a new access token + a child refresh token in the SAME family.
+    // Rotate: mint a new access token + a child refresh token in the SAME family, inheriting
+    // the family's absolute deadline (rotation never extends it).
     await issueTokenResponse(res, client, old.user_id, old.scopes, {
-        familyId: old.token_family_id,
-        parentTokenHash: old.token_hash,
+        family: {
+            familyId: old.token_family_id,
+            parentTokenHash: old.token_hash,
+            familyExpiresAt: old.family_expires_at,
+        },
     });
 }
 
@@ -402,6 +415,11 @@ router.post(
 
         const client = await authenticateClient(res, b.client_id, b.client_secret);
         if (!client) return; // error already written
+
+        // Enforce per-client grant restrictions (RFC 6749 §5.2 unauthorized_client).
+        if (!client.allowed_grant_types.includes(b.grant_type)) {
+            return tokenError(res, 400, 'unauthorized_client', 'This client may not use the requested grant type');
+        }
 
         if (b.grant_type === 'authorization_code') {
             return handleAuthorizationCodeGrant(res, client, b);

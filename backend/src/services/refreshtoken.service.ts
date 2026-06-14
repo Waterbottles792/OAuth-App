@@ -19,7 +19,8 @@ import { query } from '../db/pool';
 import { oauthConfig } from '../config';
 import { randomToken, sha256 } from '../lib/crypto';
 
-const LIFETIME = oauthConfig.refreshTokens.lifetime; // seconds (30 days, LOCKED)
+const LIFETIME = oauthConfig.refreshTokens.lifetime; // per-token (inactivity) TTL, seconds
+const MAX_FAMILY_LIFETIME = oauthConfig.refreshTokens.maxFamilyLifetime; // absolute family cap, seconds
 
 export interface RefreshTokenRecord {
     token_hash: string;
@@ -31,6 +32,7 @@ export interface RefreshTokenRecord {
     used: boolean;
     revoked: boolean;
     expires_at: Date;
+    family_expires_at: Date; // absolute deadline, constant across the family
     created_at: Date;
 }
 
@@ -41,6 +43,8 @@ export interface IssueRefreshInput {
     /** Continue an existing rotation chain; omit to start a brand-new family. */
     familyId?: string;
     parentTokenHash?: string;
+    /** The family's absolute deadline; required when continuing a chain, omit for a new family. */
+    familyExpiresAt?: Date;
 }
 
 export interface IssuedRefreshToken {
@@ -57,13 +61,23 @@ export async function issueRefreshToken(input: IssueRefreshInput): Promise<Issue
     const token = randomToken(32);
     const tokenHash = sha256(token);
 
+    // New family: stamp an absolute deadline NOW()+MAX_FAMILY_LIFETIME. Continuing a chain:
+    // inherit the family's existing deadline unchanged (rotation never extends it). The token's
+    // own expires_at is the sooner of its per-token TTL and the family deadline.
     const { rows } = await query<RefreshTokenRecord>(
         `INSERT INTO refresh_tokens
-           (token_hash, user_id, client_id, scopes, token_family_id, parent_token_hash, expires_at)
-         VALUES ($1, $2, $3, $4, COALESCE($5::uuid, gen_random_uuid()), $6,
-                 NOW() + ($7 || ' seconds')::interval)
+           (token_hash, user_id, client_id, scopes, token_family_id, parent_token_hash,
+            expires_at, family_expires_at)
+         VALUES (
+            $1, $2, $3, $4,
+            COALESCE($5::uuid, gen_random_uuid()),
+            $6,
+            LEAST(NOW() + ($7 || ' seconds')::interval,
+                  COALESCE($8::timestamptz, NOW() + ($9 || ' seconds')::interval)),
+            COALESCE($8::timestamptz, NOW() + ($9 || ' seconds')::interval)
+         )
          RETURNING token_hash, user_id, client_id, scopes, token_family_id,
-                   parent_token_hash, used, revoked, expires_at, created_at`,
+                   parent_token_hash, used, revoked, expires_at, family_expires_at, created_at`,
         [
             tokenHash,
             input.userId,
@@ -72,6 +86,8 @@ export async function issueRefreshToken(input: IssueRefreshInput): Promise<Issue
             input.familyId ?? null,
             input.parentTokenHash ?? null,
             String(LIFETIME),
+            input.familyExpiresAt ?? null,
+            String(MAX_FAMILY_LIFETIME),
         ],
     );
 
@@ -106,9 +122,10 @@ export async function rotateRefreshToken(rawToken: string, clientDbId: string): 
         `UPDATE refresh_tokens
             SET used = TRUE
           WHERE token_hash = $1 AND client_id = $2
-            AND used = FALSE AND revoked = FALSE AND expires_at > NOW()
+            AND used = FALSE AND revoked = FALSE
+            AND expires_at > NOW() AND family_expires_at > NOW()
         RETURNING token_hash, user_id, client_id, scopes, token_family_id,
-                  parent_token_hash, used, revoked, expires_at, created_at`,
+                  parent_token_hash, used, revoked, expires_at, family_expires_at, created_at`,
         [tokenHash, clientDbId],
     );
 

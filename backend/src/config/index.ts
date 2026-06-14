@@ -196,7 +196,12 @@ export const oauthConfig = {
     refreshTokens: {
         rotating: true, // LOCKED: Single-use rotating refresh tokens
         reuseDetection: true, // LOCKED: Detect and revoke on reuse
-        lifetime: 30 * 24 * 60 * 60, // LOCKED: 30 days maximum (in seconds)
+        // Per-token (inactivity) TTL — reset on each rotation, but always capped by the family
+        // deadline below so a chain can never outlive maxFamilyLifetime.
+        lifetime: 30 * 24 * 60 * 60, // 30 days (in seconds)
+        // Absolute deadline for a whole rotation family, stamped at first issuance and never
+        // extended by rotation. This is the real "30-day maximum lifetime".
+        maxFamilyLifetime: 30 * 24 * 60 * 60, // LOCKED: 30 days maximum (in seconds)
     },
 } as const;
 

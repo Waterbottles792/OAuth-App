@@ -36,11 +36,16 @@ export interface ClientRecord {
 /** Public view of a client — never includes the secret hash. */
 export type ClientPublic = Omit<ClientRecord, 'client_secret_hash'>;
 
+/** Grant types this authorization server supports (and therefore can be granted to a client). */
+export const SUPPORTED_GRANT_TYPES = ['authorization_code', 'refresh_token'] as const;
+
 export interface CreateClientInput {
     name: string;
     clientType: ClientType;
     redirectUris: string[];
     allowedScopes?: string[];
+    /** Defaults to the full supported set; refresh tokens are only issued/honored if included. */
+    allowedGrantTypes?: string[];
 }
 
 const PUBLIC_COLUMNS =
@@ -77,6 +82,21 @@ export async function createClient(
     const allowedScopes = input.allowedScopes ?? [];
     await assertScopesExist(allowedScopes);
 
+    const allowedGrantTypes = input.allowedGrantTypes ?? [...SUPPORTED_GRANT_TYPES];
+    if (allowedGrantTypes.length === 0) {
+        throw new ValidationError('At least one grant type is required');
+    }
+    const unsupportedGrants = allowedGrantTypes.filter(
+        (g) => !SUPPORTED_GRANT_TYPES.includes(g as (typeof SUPPORTED_GRANT_TYPES)[number]),
+    );
+    if (unsupportedGrants.length) {
+        throw new ValidationError(`Unsupported grant type(s): ${unsupportedGrants.join(', ')}`);
+    }
+    // refresh_token is only meaningful alongside a flow that mints one (authorization_code).
+    if (allowedGrantTypes.includes('refresh_token') && !allowedGrantTypes.includes('authorization_code')) {
+        throw new ValidationError('refresh_token grant requires the authorization_code grant');
+    }
+
     const clientId = `client_${randomToken(16)}`;
 
     // Public clients have no secret; confidential clients get one (returned once).
@@ -91,10 +111,11 @@ export async function createClient(
     try {
         const result = await query<ClientRecord>(
             `INSERT INTO oauth_clients
-               (client_id, name, client_secret_hash, client_type, redirect_uris, allowed_scopes, require_pkce)
-             VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+               (client_id, name, client_secret_hash, client_type, redirect_uris, allowed_scopes,
+                allowed_grant_types, require_pkce)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, TRUE)
              RETURNING ${PUBLIC_COLUMNS}, client_secret_hash`,
-            [clientId, input.name, secretHash, input.clientType, redirectUris, allowedScopes],
+            [clientId, input.name, secretHash, input.clientType, redirectUris, allowedScopes, allowedGrantTypes],
         );
         row = result.rows[0];
     } catch (err) {

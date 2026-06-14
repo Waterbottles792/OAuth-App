@@ -537,12 +537,27 @@ revocation. Add `/revoke`.
   JWTs; revocation acts on the refresh-token family, not on already-issued access tokens. If
   immediate access-token revocation is ever needed, that's a Phase 8 hardening item (introspection
   or a short-TTL deny-list).
-- **Refresh tokens are issued unconditionally** for the authorization_code grant (no
-  `offline_access` gating — that scope isn't in the seeded catalogue). If OIDC (Phase 6) wants to
-  gate refresh issuance on `offline_access`, do it in `handleAuthorizationCodeGrant` /
-  `issueTokenResponse`.
 - **Scopes are carried through unchanged** on rotation (no scope-narrowing via a `scope` param
   yet; RFC 6749 §6 allows a subset request — add later if needed).
+
+### Post-Phase-5 security hardening (2026-06-14)
+A security review of Phases 0–5 produced these fixes (commit after the Phase 5 feat commit):
+- **Absolute family lifetime cap (migration 006 `family_expires_at`).** Previously each rotation
+  reset a token's 30-day TTL, so a continuously-rotated family never expired. Now a family gets an
+  ABSOLUTE deadline (`oauthConfig.refreshTokens.maxFamilyLifetime`, 30 days) stamped at first
+  issuance and carried unchanged through every rotation; a child's `expires_at` is capped to it and
+  `rotateRefreshToken` refuses once it passes. `lifetime` is now the per-token inactivity TTL.
+- **Per-client grant-type enforcement.** `/token` now rejects with `unauthorized_client` if the
+  client's `allowed_grant_types` doesn't include the requested grant. Refresh tokens are only minted
+  at code exchange when the client is allowed the `refresh_token` grant (this also subsumes the old
+  "issued unconditionally / no offline_access gating" deferral — provision a client with
+  `allowedGrantTypes: ['authorization_code']` to get access tokens but no refresh token).
+  `createClient` now accepts `allowedGrantTypes` (default = full `SUPPORTED_GRANT_TYPES`) and
+  validates it (`refresh_token` requires `authorization_code`).
+- **Lower-severity items left as noted follow-ups** (not yet fixed): IP-rate-limit spoofing tied to
+  `trust proxy: 1` + fail-open on Redis outage (deployment/Phase 8), no outstanding-access-token
+  revocation (stateless JWTs — Phase 8 introspection/denylist), PKCE verifier length not validated,
+  no anti-CSRF token on the consent POST (relies on `SameSite=lax`), client-existence timing oracle.
 - _Anything Phase 6 needs:_ …
 
 ---

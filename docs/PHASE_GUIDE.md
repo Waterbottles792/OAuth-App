@@ -460,7 +460,11 @@ function rotateRefreshToken(oldToken: string) {
 - [x] Refresh token reuse detection (atomic single-use claim; replay → family revoked)
 - [x] Token family revocation (`revokeFamily` on reuse, revoked-token replay, and `/revoke`)
 - [x] Refresh tokens hashed in database (sha256; raw token never stored)
-- [x] Refresh token lifetime: 30 days maximum (`oauthConfig.refreshTokens.lifetime`)
+- [x] Refresh token lifetime: 30 days maximum — enforced as an ABSOLUTE per-family deadline
+      (`family_expires_at`, migration 006); rotation never extends it. Per-token inactivity TTL is
+      `oauthConfig.refreshTokens.lifetime`, capped by `maxFamilyLifetime`.
+- [x] Per-client grant-type enforcement at `/token` (`unauthorized_client`); refresh tokens minted
+      only for clients allowed the `refresh_token` grant.
 
 ---
 
