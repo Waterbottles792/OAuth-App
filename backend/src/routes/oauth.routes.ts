@@ -528,6 +528,15 @@ router.get(
         }
 
         const scopes = typeof payload.scope === 'string' ? payload.scope.split(' ') : [];
+
+        // OIDC Core §5.3: UserInfo requires a token issued with the `openid` scope.
+        if (!scopes.includes('openid')) {
+            res.status(403)
+                .set('WWW-Authenticate', 'Bearer error="insufficient_scope", scope="openid"')
+                .json({ error: 'insufficient_scope', error_description: 'The openid scope is required' });
+            return;
+        }
+
         const user = payload.sub ? await getUserById(payload.sub) : null;
         if (!user) {
             res.status(401)

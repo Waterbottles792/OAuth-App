@@ -626,6 +626,9 @@ A security review of Phases 0–5 produced these fixes (commit after the Phase 5
 - **`/userinfo`:** `GET /api/v1/oauth/userinfo`, Bearer access token; `verifyAccessToken` pins
   RS256 + iss + aud, then returns `{ sub, ...scope-gated claims }`. RFC 6750 errors via
   `WWW-Authenticate` (401 `invalid_request` for no token, `invalid_token` for bad/expired/unknown).
+  **Requires the `openid` scope** (OIDC Core §5.3): a token without it gets `403 insufficient_scope`
+  (added in the post-Phase-6 review). Verified live that an ID token, an `alg:none` token, and a
+  non-`openid` access token are all rejected; token/alg confusion is blocked by the `aud`+alg pinning.
 - **Anything Phase 7 (frontend) needs — endpoints to call:** discovery `GET
   /.well-known/openid-configuration` lists them all. Login `POST /api/v1/auth/login` (+ `mfa/login`),
   authorize `GET/POST /api/v1/oauth/authorize` (GET returns a `consent_required` JSON the consent UI

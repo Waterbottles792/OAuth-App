@@ -138,6 +138,27 @@ describe('Phase 6 — /userinfo', () => {
         expect(info.body.email).toBeUndefined();
     });
 
+    it('rejects an access token lacking the openid scope with 403 insufficient_scope', async () => {
+        // Drive a flow with only the `email` scope (no openid) -> no id_token, openid absent.
+        const { agent, clientId, clientSecret } = await setup();
+        const { verifier, challenge } = pkce();
+        const code = await getCode(agent, clientId, challenge, 'email');
+        const tok = await request(app).post(TOKEN).send({
+            grant_type: 'authorization_code',
+            code,
+            redirect_uri: REDIRECT,
+            client_id: clientId,
+            client_secret: clientSecret,
+            code_verifier: verifier,
+        });
+        expect(tok.body.scope).toBe('email');
+
+        const info = await request(app).get(USERINFO).set('Authorization', `Bearer ${tok.body.access_token}`);
+        expect(info.status).toBe(403);
+        expect(info.body.error).toBe('insufficient_scope');
+        expect(info.headers['www-authenticate']).toContain('insufficient_scope');
+    });
+
     it('rejects a missing token with 401', async () => {
         const info = await request(app).get(USERINFO);
         expect(info.status).toBe(401);
