@@ -16,7 +16,7 @@
 import { Router, Request, Response, NextFunction } from 'express';
 import { loadUser, requireAuth } from '../middleware/auth.middleware';
 import { tokenRateLimit } from '../middleware/rateLimit.middleware';
-import { oauthFlowConfig } from '../config';
+import { oauthFlowConfig, securityConfig } from '../config';
 import {
     redirectUriMatches,
     scopesNotAllowed,
@@ -26,7 +26,12 @@ import {
 import { getClientByClientId, verifyClientSecret, ClientRecord } from '../services/client.service';
 import { hasConsentFor, recordConsent, getScopeDetails } from '../services/consent.service';
 import { issueCode, consumeCode } from '../services/authcode.service';
-import { signAccessToken, signIdToken, verifyAccessToken } from '../services/token.service';
+import {
+    signAccessToken,
+    signIdToken,
+    verifyAccessToken,
+    denylistAccessToken,
+} from '../services/token.service';
 import {
     issueRefreshToken,
     rotateRefreshToken,
@@ -258,11 +263,30 @@ router.get(
     }),
 );
 
+/**
+ * Defence-in-depth CSRF check for the one cross-service HTML form (consent -> POST /authorize).
+ * If the browser sends an Origin header it MUST be in the CORS allowlist. A missing Origin
+ * (non-browser clients, server-to-server, and tests) is allowed — SameSite=Lax cookies already
+ * block the classic cross-site form-POST case for the consent session.
+ */
+function originAllowed(req: Request): boolean {
+    const origin = req.get('origin');
+    if (!origin) return true;
+    return securityConfig.corsOrigins.includes(origin);
+}
+
 // POST /authorize — the consent decision. Re-validates everything (never trust the GET).
 router.post(
     '/authorize',
     requireAuth,
     h(async (req, res) => {
+        if (!originAllowed(req)) {
+            res.status(403).json({
+                error: 'invalid_request',
+                error_description: 'Request origin is not allowed',
+            });
+            return;
+        }
         const v = await validateAuthorizeRequest(paramsFromBody(req));
         if (handleInvalid(res, v)) return;
         if (v.kind !== 'ok') return;
@@ -554,8 +578,9 @@ router.post(
 
         const token = b.token;
         if (token) {
-            // token_type_hint is advisory; we only manage refresh tokens (access tokens are
-            // stateless JWTs). Unknown/foreign tokens are silently ignored per RFC 7009 §2.2.
+            // token_type_hint is advisory. We first try the refresh-token store; if that's not a
+            // match we try to verify it as one of OUR access tokens and deny-list it by jti until
+            // it would expire. Unknown/foreign tokens are silently ignored per RFC 7009 §2.2.
             const result = await revokeRefreshToken(token, client.id);
             if (result.found) {
                 await recordAudit({
@@ -563,12 +588,77 @@ router.post(
                     result: 'success',
                     clientId: client.client_id,
                     ip: req.ip,
-                    detail: { family: result.familyId },
+                    detail: { family: result.familyId, token_type: 'refresh_token' },
                 });
+            } else {
+                try {
+                    const payload = await verifyAccessToken(token);
+                    // Only the client the token was issued to may revoke it.
+                    if (payload.client_id === client.client_id && payload.jti && payload.exp) {
+                        await denylistAccessToken(payload.jti as string, payload.exp);
+                        await recordAudit({
+                            event: 'token_revoked',
+                            result: 'success',
+                            actorUserId: payload.sub,
+                            clientId: client.client_id,
+                            ip: req.ip,
+                            detail: { token_type: 'access_token' },
+                        });
+                    }
+                } catch {
+                    // Not a valid access token either — ignore (RFC 7009 §2.2).
+                }
             }
         }
 
         res.status(200).set('Cache-Control', 'no-store').set('Pragma', 'no-cache').json({});
+    }),
+);
+
+// ---------------------------------------------------------------------------
+// Introspection endpoint (RFC 7662) — back-channel, client-authenticated. Reports whether an
+// access token is currently active (validly signed, unexpired, and not deny-listed). Returns
+// only `{ active: false }` for anything invalid, so it can't be used as a decryption oracle.
+// ---------------------------------------------------------------------------
+
+router.post(
+    '/introspect',
+    tokenRateLimit,
+    h(async (req, res) => {
+        const b = req.body as Record<string, string | undefined>;
+
+        const client = await authenticateClient(res, b.client_id, b.client_secret);
+        if (!client) return; // error already written
+
+        const inactive = (): void => {
+            res.status(200).set('Cache-Control', 'no-store').set('Pragma', 'no-cache').json({ active: false });
+        };
+
+        const token = b.token;
+        if (!token) return inactive();
+
+        try {
+            const payload = await verifyAccessToken(token);
+            // A token is only introspectable by the client it was issued to.
+            if (payload.client_id !== client.client_id) return inactive();
+            res.status(200)
+                .set('Cache-Control', 'no-store')
+                .set('Pragma', 'no-cache')
+                .json({
+                    active: true,
+                    scope: payload.scope,
+                    client_id: payload.client_id,
+                    sub: payload.sub,
+                    token_type: 'Bearer',
+                    exp: payload.exp,
+                    iat: payload.iat,
+                    iss: payload.iss,
+                    aud: payload.aud,
+                    jti: payload.jti,
+                });
+        } catch {
+            return inactive();
+        }
     }),
 );
 

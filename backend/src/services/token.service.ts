@@ -14,6 +14,8 @@
 import { SignJWT, jwtVerify, importPKCS8, importSPKI, JWTPayload } from 'jose';
 import { oauthConfig, oauthFlowConfig } from '../config';
 import { getActiveSigningKey, getPublicKeyPem } from './key.service';
+import { getRedis } from '../db/redis';
+import { randomToken } from '../lib/crypto';
 
 const ALG = oauthConfig.tokens.algorithm; // 'RS256' (LOCKED)
 const LIFETIME = oauthConfig.tokens.accessTokenLifetime; // 900s (LOCKED)
@@ -39,8 +41,10 @@ export async function signAccessToken(input: AccessTokenInput): Promise<IssuedTo
 
     const nowSec = Math.floor(Date.now() / 1000);
     const scope = input.scopes.join(' ');
+    // jti gives each access token a stable id so it can be individually revoked (deny-list).
+    const jti = randomToken(16);
 
-    const accessToken = await new SignJWT({ scope, client_id: input.clientId })
+    const accessToken = await new SignJWT({ scope, client_id: input.clientId, jti })
         .setProtectedHeader({ alg: ALG, kid: key.kid, typ: 'at+jwt' })
         .setIssuer(oauthFlowConfig.issuer)
         .setSubject(input.userId)
@@ -50,6 +54,26 @@ export async function signAccessToken(input: AccessTokenInput): Promise<IssuedTo
         .sign(privateKey);
 
     return { accessToken, tokenType: 'Bearer', expiresIn: LIFETIME, scope };
+}
+
+// ---- Access-token deny-list (revocation) ----------------------------------------------
+// Access tokens are stateless JWTs, so revocation is a deny-list keyed by jti, held in Redis
+// only until the token would have expired anyway (so the set stays small and self-cleaning).
+
+const DENYLIST_PREFIX = 'denylist:at:';
+
+/** Revoke a specific access token by jti until `expSec` (epoch seconds). No-op if past exp. */
+export async function denylistAccessToken(jti: string, expSec: number): Promise<void> {
+    const ttl = expSec - Math.floor(Date.now() / 1000);
+    if (ttl <= 0) return;
+    const redis = await getRedis();
+    await redis.set(DENYLIST_PREFIX + jti, '1', { EX: ttl });
+}
+
+async function isDenylisted(jti: string | undefined): Promise<boolean> {
+    if (!jti) return false;
+    const redis = await getRedis();
+    return (await redis.get(DENYLIST_PREFIX + jti)) !== null;
 }
 
 export interface IdTokenInput {
@@ -105,5 +129,9 @@ export async function verifyAccessToken(token: string): Promise<JWTPayload> {
         issuer: oauthFlowConfig.issuer,
         audience: oauthFlowConfig.accessTokenAudience,
     });
+
+    // A structurally valid, unexpired token can still have been explicitly revoked.
+    if (await isDenylisted(payload.jti)) throw new Error('token revoked');
+
     return payload;
 }

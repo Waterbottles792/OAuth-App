@@ -16,7 +16,7 @@ import { runMigrations } from '../db/migrate';
 import { closePool, query } from '../db/pool';
 import { getRedis, closeRedis } from '../db/redis';
 
-const REDIS_PATTERNS = ['session:*', 'mfa_challenge:*', 'ratelimit:*', 'alert:*'];
+const REDIS_PATTERNS = ['session:*', 'mfa_challenge:*', 'ratelimit:*', 'alert:*', 'denylist:*'];
 
 beforeAll(async () => {
     await runMigrations();

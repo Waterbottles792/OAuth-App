@@ -9,13 +9,13 @@ complements the in-code controls and the audit-log + alerting + key-rotation wor
 ## 1. Dependency audit (`npm audit`)
 
 - **Backend:** `0 vulnerabilities` (prod and dev).
-- **Frontend:** the reported advisories (`postcss`, `flatted`, `glob`, `minimatch`, `ajv`,
-  `brace-expansion`) are all transitive through **Next.js 14 build/lint tooling**
-  (`eslint-config-next`, postcss), not the runtime request path. None are reachable by an
-  attacker against the running app (no untrusted CSS is processed; glob/minimatch/flatted/ajv
-  are build/lint-time). The only fix offered is a major upgrade to Next 16 (breaking).
-  **Decision:** tracked, not force-upgraded in this phase; revisit with a planned Next major
-  upgrade.
+- **Frontend:** ran `npm audit fix` (non-breaking) — cleared the safely-patchable transitive
+  advisories (10 → 5). The 5 remaining (`postcss`, plus Next dev/build tooling) are transitive
+  through **Next.js 14 build/lint tooling** (`eslint-config-next`, postcss), not the runtime
+  request path. None are reachable by an attacker against the running app (no untrusted CSS is
+  processed; the rest are build/lint-time). The only remaining fix offered is a major upgrade to
+  Next 16 (breaking). **Decision:** patched what's safe; the rest tracked for a planned Next
+  major upgrade. Frontend production build verified green after the fix.
 
 ## 2. Security headers
 
@@ -48,16 +48,23 @@ complements the in-code controls and the audit-log + alerting + key-rotation wor
 | Alerting | reuse (immediate), login-failure & signature-failure spikes (threshold); logs + `ALERT_WEBHOOK_URL` sink | ✅ wired (webhook) |
 | Key rotation | zero-downtime overlap; JWKS serves old+new; cache TTL for fleet pickup | ✅ |
 | `trust proxy` spoofing | configurable `TRUST_PROXY` (must match real topology) | ✅ |
+| Access-token revocation | `jti` deny-list in Redis (TTL = remaining token life); enforced in `verifyAccessToken`; `/revoke` accepts access tokens | ✅ |
+| Token introspection | RFC 7662 `/introspect`, client-authenticated, owner-scoped, `{active:false}` for anything invalid (no oracle) | ✅ |
+| CSRF (consent form) | CORS origin allowlist (server-side) + `SameSite=Lax` + route-level Origin check on POST /authorize | ✅ |
 
 ## 4. Accepted / deferred (post-Phase-8)
 
-- **No revocation of already-issued access tokens** — they are short-lived (15 min) stateless
-  JWTs; revocation acts on the refresh-token family. Add token introspection / a short-TTL
-  Redis deny-list if immediate access-token kill is required.
+- **Access-token revocation** — ✅ DONE. Each access token now carries a `jti`; `/revoke`
+  accepts access tokens and deny-lists the `jti` in Redis (TTL = remaining lifetime), and
+  `verifyAccessToken` rejects deny-listed tokens. RFC 7662 `/introspect` reports live status.
+  Tokens remain short-lived (15 min) so the deny-list stays small and self-expiring.
 - **CSRF on the JSON API** relies on CORS allowlist + `SameSite=Lax` + JSON content-type; the
-  one cross-service HTML form (consent → `/authorize`) is re-validated server-side. A
-  double-submit CSRF token is not yet added.
+  one cross-service HTML form (consent → `/authorize`) is re-validated server-side AND now has a
+  route-level Origin allowlist check (defence-in-depth on top of the CORS origin rejection).
+  A double-submit CSRF token is still not added (the layered controls above cover the threat).
 - **CSP nonces** — frontend uses `'unsafe-inline'` for scripts/styles; tighten to nonces.
+  Deferred: adding eval/nonce constraints previously broke Next HMR; revisit with the Next major
+  upgrade so it can be validated end-to-end in one pass.
 - **Alert sink** — wired: logs always, plus an outbound webhook when `ALERT_WEBHOOK_URL` is set
   (verified live: a refresh-token reuse delivered a `critical` alert to a local receiver). Point it
   at a Slack/PagerDuty/SIEM endpoint in prod.
